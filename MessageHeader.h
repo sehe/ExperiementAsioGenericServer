@@ -1,8 +1,7 @@
 #pragma once
 #include "prerequisites.h"
-template<typename T>
-struct MessageHeader
-{
-	T id{};
-	uint32_t size = 0;
+
+template <typename MsgId> struct MessageHeader {
+    MsgId    id{};
+    uint32_t size = 0;
 };
