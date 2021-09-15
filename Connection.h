@@ -152,9 +152,8 @@ class Connection
     }
     void Send(const Message<MsgId>& msg)
     {
-        bool bEmpty = qMessagesOut.empty();
         qMessagesOut.push_back(msg);
-        if (bEmpty) {
+        if (qMessagesOut.count() == 1) { // SEHE TODO FIXME Race condition
             WriteHeader();
         }
     }
@@ -176,19 +175,14 @@ class Connection
                ClientMessageSentCallbackType  messagesent_handle,
                ClientDisconnectCallbackType   disconnect_handle,
                ThreadSafeQueue<OwnedMessage>& qIn)
-        : strand_(executor)
+        : disconnect_handler(disconnect_handle)
+        , message_handler(message_handle)
+        , messagesent_handler(messagesent_handle)
+        , strand_(executor)
         , socket_(strand_)
+        , connectionId(id)
         , qMessagesIn(qIn)
-    {
-        this->connectionId = id;
-        this->tempInMsg    = Message<MsgId>();
-        this->invalidState = false;
-
-        this->disconnect_handler  = disconnect_handle;
-        this->message_handler     = message_handle;
-        this->alreadyDisconnected = false;
-        this->messagesent_handler = messagesent_handle;
-    }
+    { }
 
     ClientDisconnectCallbackType  disconnect_handler;
     ClientMessageCallbackType     message_handler;
@@ -298,9 +292,10 @@ class Connection
             async_write(
                 socket_,
                 boost::asio::buffer(&message->message_header,
-                                    sizeof(MessageHeader<MsgId>)),
-                [this, self, message = std::move(message)](
-                    std::error_code ec, std::size_t /*length*/) mutable {
+                                    sizeof(message->message_header)),
+                [this, self,
+                 message](std::error_code              ec,
+                          [[maybe_unused]] std::size_t length) mutable {
                     // asio has now sent the bytes - if there was a problem
                     // an error would be available...
                     if (!ec) {
@@ -377,10 +372,9 @@ class Connection
         // header indicated a body existed for this message. Fill a transmission
         // buffer with the body data, and send it!
         async_write(
-            socket_,
-            boost::asio::buffer(message->body.data(), message->body.size()),
-            [this, self, message = std::move(message)](
-                std::error_code ec, std::size_t /*length*/) mutable {
+            socket_, boost::asio::buffer(message->body),
+            [this, self, message](std::error_code              ec,
+                                  [[maybe_unused]] std::size_t length) mutable {
                 if (!ec) {
                     if (messagesent_handler) {
                         OwnedMessage tempOutMsg{
@@ -395,7 +389,7 @@ class Connection
 
                     // If the queue still has messages in it, then issue the
                     // task to send the next messages' header.
-                    if (!qMessagesOut.empty()) {
+                    if (!qMessagesOut.empty()) { // TODO FIXME Race condition
                         WriteHeader();
                     }
 #ifdef VERBOSE_SERVER_DEBUG
@@ -456,6 +450,6 @@ class Connection
 
     boost::signals2::connection c;
 
-    bool invalidState;
-    bool alreadyDisconnected;
+    bool invalidState        = false;
+    bool alreadyDisconnected = false;
 };

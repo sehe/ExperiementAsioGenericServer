@@ -134,7 +134,7 @@ int main()
     srv = new MyServer(context.get_executor(), ep);
 
     std::cout << "Hello World!\n";
-    timer.expires_from_now(5s);
+    timer.expires_from_now(1s);
     timer.async_wait(timedBcast);
 
     std::string str;

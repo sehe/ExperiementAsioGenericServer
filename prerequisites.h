@@ -1,4 +1,5 @@
 #pragma once
+//#define VERBOSE_SERVER_DEBUG
 // Windows stuff.
 #define _CRT_SECURE_NO_WARNINGS
 #define NOMINMAX
