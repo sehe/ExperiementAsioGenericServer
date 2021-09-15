@@ -1,17 +1,20 @@
 #pragma once
 #include "prerequisites.h"
+#include <future>
+
 template <typename Message, typename Executor> class Server {
   protected:
-    using base_type  = Server<Message, Executor>;
-    using acceptor_t = boost::asio::basic_socket_acceptor<tcp, Executor>;
-    using Strand     = boost::asio::strand<Executor>;
-    using conn_t     = Connection<Message, Strand>;
-    using MsgPtr     = typename conn_t::MsgPtr;
-    using ConnPtr    = std::shared_ptr<conn_t>;
+    using base_type   = Server<Message, Executor>;
+    using Strand      = boost::asio::strand<Executor>;
+    using acceptor_t  = boost::asio::basic_socket_acceptor<tcp, Strand>;
+    using conn_t      = Connection<Message, Strand>;
+    using MsgPtr      = typename conn_t::MsgPtr;
+    using ConnPtr     = std::shared_ptr<conn_t>;
+    using WeakConnPtr = std::weak_ptr<conn_t>;
 
   public:
     Server(Executor executor, tcp::endpoint endpoint)
-        : acceptor_(executor)
+        : executor_(executor)
     {
         acceptor_.open(endpoint.protocol());
         acceptor_.set_option(tcp::acceptor::reuse_address(true));
@@ -29,58 +32,62 @@ template <typename Message, typename Executor> class Server {
     void interrupt()
     {
         shutdownBegan = true;
-        // messageVar.notify_one();
-        acceptor_.cancel();
-        acceptor_.close();
-        {
-            std::lock_guard lk(connectionMutex);
-            for (const auto& [key, value] : connections) {
-                value->Disconnect(true, true, true);
+
+        post(strand_, [this] {
+            acceptor_.cancel();
+            acceptor_.close();
+            for (const auto& [id, handle] : connections) {
+                if (auto conn = handle.lock())
+                    conn->Disconnect(true, true, true);
             }
             connections.clear();
-        }
 
-        shutdownCompleted = true;
+            shutdownCompleted = true;
+        });
     }
 
-    unsigned long long CalculateAverageBacklog()
+    std::future<size_t> CalculateAverageBacklog()
     {
-        size_t total = 0;
-        size_t count = 0;
-        {
-            std::lock_guard lk(connectionMutex);
-            for (const auto& [key, value] : connections) {
-                if (!value->IsInvalid()) {
-                    size_t backlog = value->GetSendBacklog();
-                    total += backlog;
-                    count++;
+        std::packaged_task<size_t()> task([this]() -> size_t {
+            size_t total = 0;
+            size_t count = 0;
+            for (const auto& [id, handle] : connections) {
+                if (auto conn = handle.lock()) {
+                    if (!conn->IsInvalid()) {
+                        size_t backlog = conn->GetSendBacklog();
+                        total += backlog;
+                        count++;
+                    }
                 }
             }
-        }
-        if (count > 0) {
-            auto average = total / count;
-            return average;
-        }
-        return 0;
+
+            if (count) {
+                auto average = 1.0 * total / count;
+                return average;
+            }
+            return 0;
+        });
+
+        post(strand_,task);
+        return task.get_future();
     }
 
     void BroadcastMessage(MsgPtr msg)
     {
-        std::lock_guard lk(connectionMutex);
-
-        for (const auto& [key, value] : connections) {
-            if (!value->IsInvalid()) {
-                value->Send(msg);
+        post(strand_, [this, msg = std::move(msg)] {
+            for (const auto& kvp : connections) {
+                post(executor_, [this, handle = kvp.second, msg] {
+                    if (auto conn = handle.lock()) {
+                        if (!conn->IsInvalid()) {
+                            conn->Send(std::move(msg));
+                        }
+                    }
+                });
             }
-        }
+        });
     }
 
     virtual ~Server() = default; // important for `delete` on derived classes!
-
-    bool IsShutDownCompleted()
-    {
-        return shutdownCompleted;
-    }
 
   protected:
     // This server class should override thse functions to implement
@@ -121,7 +128,7 @@ template <typename Message, typename Executor> class Server {
         if (!shutdownBegan && acceptor_.is_open()) {
 
             auto new_connection = conn_t::create(
-                make_strand(acceptor_.get_executor()),
+                make_strand(executor_), 
                 connectionIds++,
                 boost::bind(&Server::client_message, this, _1, _2),
                 boost::bind(&Server::message_sent, this, _1, _2),
@@ -134,7 +141,6 @@ template <typename Message, typename Executor> class Server {
         }
     }
 
-#pragma region Handle the Connection Acceptance
     void handle_accept(ConnPtr new_connection, error_code error)
     {
         if (!error && !shutdownBegan) {
@@ -143,7 +149,6 @@ template <typename Message, typename Executor> class Server {
             if (OnClientConnect(new_connection)) {
                 new_connection->accepted();
                 addConnection(std::move(new_connection));
-
             } else {
 #ifdef VERBOSE_SERVER_DEBUG
 
@@ -161,25 +166,25 @@ template <typename Message, typename Executor> class Server {
 #endif
         }
     }
-#pragma endregion
 
-#pragma region Add Connection
     void addConnection(ConnPtr connection)
     {
         if (!shutdownBegan) {
-            std::lock_guard lk(connectionMutex);
-            connections.emplace(connection->GetId(),
-                                      std::move(connection));
+            post(strand_, [this, conn = std::move(connection)]() mutable {
+
+                connections.emplace(conn->GetId(), std::move(conn));
+                // garbage collect connections
+                // c++20, otherwise clumsy iterator loop
+                std::erase_if(connections,
+                              [](auto& kvp) { return kvp.second.expired(); });
+            });
         }
     }
-#pragma endregion
 
-#pragma region Remove Connection
     void removeConnectionById(int id)
     {
         if (!shutdownBegan) {
-            std::lock_guard lk(connectionMutex);
-            connections.erase(id);
+            post(strand_, [this, id]() mutable { connections.erase(id); });
         }
     }
     
@@ -188,15 +193,13 @@ template <typename Message, typename Executor> class Server {
         removeConnectionById(connection->GetId());
     }
 
-#pragma endregion
-
-    acceptor_t             acceptor_;
-    std::mutex             connectionMutex;
-    std::map<int, ConnPtr> connections;
-    std::vector<int>       connectionsToRemove;
-    std::atomic_bool       shutdownBegan{false};
-    std::atomic_bool       shutdownCompleted{false};
-    int                    connectionIds{10'000};
+    Executor                   executor_;
+    Strand                     strand_ = make_strand(executor_);
+    acceptor_t                 acceptor_{strand_};
+    std::map<int, WeakConnPtr> connections;
+    std::atomic_bool           shutdownBegan{false};
+    std::atomic_bool           shutdownCompleted{false};
+    int                        connectionIds{10'000};
 
     struct OwnedMessage {
         ConnPtr remote = nullptr;

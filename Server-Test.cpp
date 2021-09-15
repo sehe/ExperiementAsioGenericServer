@@ -114,10 +114,10 @@ void timedBcast(error_code e)
             auto const time  = tDone - tPrepared;
             auto const time2 = tDone - tStart;
 
-            if (time != previous_time && time > 6ms) {
+            if (time != previous_time && time > 2us) {
                 // timer += time - 6;
-                std::cout << "Broadcast took " << time / 1ms << "ms | "
-                          << time2 / 1ms << "ms" << std::endl;
+                std::cout << "Broadcast took " << time / 1.0us << "μs | "
+                          << time2 / 1us << "μs" << std::endl;
                 previous_time = time;
             }
             auto time_expire = 99ms - time2;
