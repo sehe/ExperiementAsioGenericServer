@@ -1,14 +1,13 @@
 #pragma once
 #include "prerequisites.h"
 template <typename MsgId, typename Executor> class Server {
-    using acceptor_t = boost::asio::basic_socket_acceptor<tcp, Executor>;
-    using socket_t   = boost::asio::basic_stream_socket<tcp, Executor>;
-
   protected:
-    using conn_t       = Connection<MsgId, Executor>;
-    using OwnedMessage = typename conn_t::OwnedMessage;
-    using ConnPtr      = boost::shared_ptr<conn_t>;
-    using base_type    = Server<MsgId, Executor>;
+    using base_type  = Server<MsgId, Executor>;
+    using acceptor_t = boost::asio::basic_socket_acceptor<tcp, Executor>;
+    using Strand     = boost::asio::strand<Executor>;
+    using conn_t     = Connection<MsgId, Strand>;
+    using MsgPtr     = typename conn_t::MsgPtr;
+    using ConnPtr    = boost::shared_ptr<conn_t>;
 
   public:
     Server(Executor executor, tcp::endpoint endpoint)
@@ -23,24 +22,23 @@ template <typename MsgId, typename Executor> class Server {
 
         this->acceptor_.bind(endpoint);
         this->acceptor_.listen();
-        this->shutdownBeginning = false;
-        this->shutdownCompleted = false;
 
         this->start_accept();
     }
 
     void interrupt()
     {
-        this->shutdownBeginning = true;
+        this->shutdownBegan = true;
         // this->messageVar.notify_one();
         this->acceptor_.cancel();
         this->acceptor_.close();
-        std::unique_lock<std::mutex> conMutex(this->connectionMutex);
-        for (const auto& [key, value] : this->connections) {
-            value->Disconnect(true, true, true);
+        {
+            std::lock_guard<std::mutex> lk(this->connectionMutex);
+            for (const auto& [key, value] : this->connections) {
+                value->Disconnect(true, true, true);
+            }
+            this->connections.clear();
         }
-        this->connections.clear();
-        conMutex.unlock();
 
         this->shutdownCompleted = true;
     }
@@ -49,37 +47,32 @@ template <typename MsgId, typename Executor> class Server {
 
         size_t                       total = 0;
         size_t                       count = 0;
-        std::unique_lock<std::mutex> conMutex(this->connectionMutex);
-        for (const auto& [key, value] : this->connections) {
-            if (!value->IsInvalid()) {
-                size_t backlog = value->GetSendBacklog();
-                total += backlog;
-                count++;
+        {
+            std::lock_guard<std::mutex> lk(this->connectionMutex);
+            for (const auto& [key, value] : this->connections) {
+                if (!value->IsInvalid()) {
+                    size_t backlog = value->GetSendBacklog();
+                    total += backlog;
+                    count++;
+                }
             }
         }
-        conMutex.unlock();
         if (count > 0) {
             auto average = total / count;
             return average;
         }
         return 0;
     }
-    void BroadcastMessage(Message<MsgId>& msg)
+
+    void BroadcastMessage(Message<MsgId> const& msg)
     {
-        std::unique_lock<std::mutex> conMutex(this->connectionMutex);
+        std::lock_guard<std::mutex> lk(this->connectionMutex);
 
         for (const auto& [key, value] : this->connections) {
             if (!value->IsInvalid()) {
                 value->Send(msg);
             }
         }
-
-        //std::for_each(std::execution::par_unseq, this->connections.begin(),
-                      //this->connections.end(),
-                      //[msg](auto&& item) { item.second->Send(msg); });
-        conMutex.unlock();
-
-        // this->bcast(msg);
     }
 
     virtual ~Server() = default; // important for `delete` on derived classes!
@@ -95,23 +88,14 @@ template <typename MsgId, typename Executor> class Server {
 
     // Called when a client connects, you can veto the connection by returning
     // false
-    virtual bool OnClientConnect(ConnPtr const& /*client*/)
-    {
-        return false;
-    }
+    virtual bool OnClientConnect(ConnPtr const& /*client*/) { return false; }
 
     // Called when a client appears to have disconnected
-    virtual void OnClientDisconnect(ConnPtr const& /*client*/)
-    {
-    }
+    virtual void OnClientDisconnect(ConnPtr const& /*client*/) { }
 
     // Called when a message arrives
-    virtual void OnMessage(OwnedMessage& /*message*/)
-    {
-    }
-    virtual void OnMessageSent(OwnedMessage* /*message*/)
-    {
-    }
+    virtual void OnMessage(MsgPtr const& /*message*/, ConnPtr const&) { }
+    virtual void OnMessageSent(MsgPtr const& /*message*/, ConnPtr const&) { }
 
   private:
     void client_disconnected(ConnPtr const& connection)
@@ -119,25 +103,29 @@ template <typename MsgId, typename Executor> class Server {
         OnClientDisconnect(connection);
         removeConnection(connection);
     }
-    void client_message(OwnedMessage& message)
+
+    void client_message(MsgPtr const& message, ConnPtr const& conn)
     {
-        OnMessage(message);
+        OnMessage(message, conn);
     }
-    void message_sent(OwnedMessage* message)
+
+    void message_sent(MsgPtr const& message, ConnPtr const& conn)
     {
-        OnMessageSent(message);
+        OnMessageSent(message, conn);
     }
+
     void start_accept()
     {
         using boost::placeholders::_1;
-        if (!this->shutdownBeginning && this->acceptor_.is_open()) {
-            int  id             = this->connectionIds++;
+        using boost::placeholders::_2;
+        if (!this->shutdownBegan && this->acceptor_.is_open()) {
+
             auto new_connection = conn_t::create(
-                this->acceptor_.get_executor(), id,
-                boost::bind(&Server::client_message, this, _1),
-                boost::bind(&Server::message_sent, this, _1),
-                boost::bind(&Server::client_disconnected, this, _1),
-                qMessagesIn);
+                make_strand(this->acceptor_.get_executor()),
+                this->connectionIds++,
+                boost::bind(&Server::client_message, this, _1, _2),
+                boost::bind(&Server::message_sent, this, _1, _2),
+                boost::bind(&Server::client_disconnected, this, _1));
 
             this->acceptor_.async_accept(
                 new_connection->socket(),
@@ -149,7 +137,7 @@ template <typename MsgId, typename Executor> class Server {
 #pragma region Handle the Connection Acceptance
     void handle_accept(ConnPtr new_connection, error_code error)
     {
-        if (!error && !this->shutdownBeginning) {
+        if (!error && !this->shutdownBegan) {
             this->start_accept();
             using boost::placeholders::_1;
             if (OnClientConnect(new_connection)) {
@@ -166,7 +154,7 @@ template <typename MsgId, typename Executor> class Server {
 #endif
             }
 
-        } else if (!this->shutdownBeginning) {
+        } else if (!this->shutdownBegan) {
             this->start_accept();
 #ifdef VERBOSE_SERVER_DEBUG
 
@@ -180,11 +168,10 @@ template <typename MsgId, typename Executor> class Server {
 #pragma region Add Connection
     void addConnection(ConnPtr connection)
     {
-        if (!this->shutdownBeginning) {
-            std::unique_lock<std::mutex> conMutex(this->connectionMutex);
+        if (!this->shutdownBegan) {
+            std::lock_guard<std::mutex> lk(this->connectionMutex);
             this->connections.emplace(connection->GetId(),
                                       std::move(connection));
-            conMutex.unlock();
         }
     }
 #pragma endregion
@@ -192,10 +179,9 @@ template <typename MsgId, typename Executor> class Server {
 #pragma region Remove Connection
     void removeConnectionById(int id)
     {
-        if (!this->shutdownBeginning) {
-            std::unique_lock<std::mutex> conMutex(this->connectionMutex);
+        if (!this->shutdownBegan) {
+            std::lock_guard<std::mutex> lk(this->connectionMutex);
             this->connections.erase(id);
-            conMutex.unlock();
         }
     }
     
@@ -206,14 +192,19 @@ template <typename MsgId, typename Executor> class Server {
 
 #pragma endregion
 
-    acceptor_t                    acceptor_;
-    std::mutex                    connectionMutex;
-    std::map<int, ConnPtr>        connections;
-    std::vector<int>              connectionsToRemove;
-    std::atomic_bool              shutdownBeginning{false};
-    std::atomic_bool              shutdownCompleted{false};
-    int                           connectionIds{10'000};
-    ThreadSafeQueue<OwnedMessage> qMessagesIn;
+    acceptor_t             acceptor_;
+    std::mutex             connectionMutex;
+    std::map<int, ConnPtr> connections;
+    std::vector<int>       connectionsToRemove;
+    std::atomic_bool       shutdownBegan{false};
+    std::atomic_bool       shutdownCompleted{false};
+    int                    connectionIds{10'000};
+
+    struct OwnedMessage {
+        ConnPtr remote = nullptr;
+        Message<MsgId> msg;
+    };
+    ThreadSafeQueue<OwnedMessage> qMessagesIn; // why is this here?
 
     boost::signals2::signal<void(Message<MsgId>&)> bcast;
 };

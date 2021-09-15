@@ -5,9 +5,6 @@
 #include "prerequisites.h"
 #include <utility>
 
-boost::asio::thread_pool context;
-int                      messageCount;
-
 enum class MessageTypes : uint32_t {
     ServerAccept,
     ServerDeny,
@@ -26,9 +23,10 @@ enum class MessageTypes : uint32_t {
     ServerMessage9,
 };
 
-class MyServer : public Server<MessageTypes, boost::asio::any_io_executor> {
+using Executor = boost::asio::thread_pool::executor_type;
+
+class MyServer : public Server<MessageTypes, Executor> {
   public:
-    template <typename Executor>
     MyServer(Executor executor, tcp::endpoint ep)
         : MyServer::base_type(executor, std::move(ep))
     {
@@ -48,40 +46,46 @@ class MyServer : public Server<MessageTypes, boost::asio::any_io_executor> {
         client->Send(msg);
         return true;
     }
-    void OnMessage(OwnedMessage& msg) override
+    void OnMessage(MsgPtr const& msg, ConnPtr const& remote) override
     {
-        std::cout << "[ Client " << msg.remote->GetId() << " ] ";
-        if (msg.msg.message_header.id == MessageTypes::SendText) {
-            std::string message = msg.msg.GetString(0);
+        std::cout << "[ Client " << remote->GetId() << " ] ";
+        if (msg->message_header.id == MessageTypes::SendText) {
+            std::string message = msg->GetString(0);
             std::cout << " Received Message" << std::endl;
             message = "";
-            msg.remote->Send(msg.msg); // fire it back to the client
+            remote->Send(*msg); // fire it back to the client
         }
     }
-    void OnMessageSent(OwnedMessage* /* msg*/) override
+
+    void OnMessageSent(MsgPtr const&,
+                       [[maybe_unused]] ConnPtr const& remote) override
     {
-        // std::cout << "[ Client " << msg->remote->GetId() << " ] ";
+        // std::cout << "[ Client " << remote->GetId() << " ] ";
         // std::cout << " Sent Message" << std::endl;
     }
 };
 
 MyServer* srv;
 
-Clock::duration                    previous_time      = 0s;
-//Clock::duration                    highest_time       = 0s;
-//int                                total_thread_count = 0;
-//size_t                             max_thread_count   = 1;
-std::atomic_bool                   stop               = false;
+int                      messageCount;
+Clock::duration          previous_time      = 0s;
+// Clock::duration       highest_time       = 0s;
+// int                   total_thread_count = 0;
+// size_t                max_thread_count   = 1;
+std::atomic_bool         stop               = false;
+boost::asio::thread_pool context;
+
 boost::asio::high_resolution_timer timer(context, 1s);
 
 void timedBcast(const boost::system::error_code& e)
 {
     // std::cout << "Beginning BCAST..." << std::endl;
-    Clock::time_point tStart = Clock::now();
+    Clock::time_point const tStart = Clock::now();
 
     if (!e && !stop) {
 
         if (srv != nullptr) {
+
             if (messageCount >= 1000) {
                 messageCount = 0;
             }
@@ -90,8 +94,7 @@ void timedBcast(const boost::system::error_code& e)
             // std::string message = "HELLO WORLD TO ALL BROADCAST! ";
             // message += std::to_string(messageCount++);
 
-            int         msg_sz  = rand() % 102400 + 81920;
-            std::string message = std::string(msg_sz, 'a');
+            std::string message = std::string(rand() % 102400 + 81920, 'a');
             message += " ";
             message += std::to_string(messageCount++);
             Message<MessageTypes> msg;
@@ -134,7 +137,7 @@ int main()
     srv = new MyServer(context.get_executor(), ep);
 
     std::cout << "Hello World!\n";
-    timer.expires_from_now(1s);
+    timer.expires_from_now(5s);
     timer.async_wait(timedBcast);
 
     std::string str;

@@ -65,11 +65,9 @@
 // typedef int (*CallbackType)(float);
 template <typename T, typename Executor> class Connection;
 template <typename T> struct Message;
-//template <typename T> struct OwnedMessage;
 
 #include "MessageHeader.h"
 #include "Message.h"
-#include "OwnedMessage.h"
 #include "ThreadSafeQueue.h"
 
 using boost::asio::ip::tcp;

@@ -2,39 +2,29 @@
 #include "prerequisites.h"
 template <typename MsgId, typename Executor>
 class Connection
-    : public boost::enable_shared_from_this<Connection<MsgId, Executor>> {
+    : public boost::enable_shared_from_this<Connection<MsgId, Executor>> //
+{
+    using socket_t = boost::asio::basic_stream_socket<tcp, Executor>;
+
   public:
     using ConnPtr = boost::shared_ptr<Connection<MsgId, Executor>>;
+    using MsgPtr  = boost::shared_ptr<Message<MsgId>>;
 
-    struct OwnedMessage {
-        ConnPtr remote = nullptr;
-        Message<MsgId> msg;
-
-        /*
-         * // Again, a friendly string maker
-         * friend std::ostream& operator<<(std::ostream&       os,
-         *                                 const OwnedMessage& msg)
-         * { return os << msg.msg; }
-         */
-    };
-
+    using ClientMessageCallbackType     = boost::function<void(MsgPtr const&, ConnPtr const&)>;
+    using ClientMessageSentCallbackType = boost::function<void(MsgPtr const&, ConnPtr const&)>;
     using ClientDisconnectCallbackType  = boost::function<void(ConnPtr const&)>;
-    using ClientMessageCallbackType     = boost::function<void(OwnedMessage&)>;
-    using ClientMessageSentCallbackType = boost::function<void(OwnedMessage*)>;
 
     enum class owner { server, client };
 
-    static ConnPtr
-    create(Executor executor, int id,
-           ClientMessageCallbackType      message_handle,
-           ClientMessageSentCallbackType  messagesent_handle,
-           ClientDisconnectCallbackType   disconnect_handle,
-           ThreadSafeQueue<OwnedMessage>& qIn)
+    static ConnPtr create(Executor executor, int id,
+                          ClientMessageCallbackType     message_handle,
+                          ClientMessageSentCallbackType messagesent_handle,
+                          ClientDisconnectCallbackType  disconnect_handle)
     {
         // should be make_shared, but not posisble due to private constructor
         return ConnPtr(new Connection<MsgId, Executor>(
-            executor, id, message_handle, messagesent_handle, disconnect_handle,
-            qIn));
+            executor, id, message_handle, messagesent_handle,
+            disconnect_handle));
     }
     // void ModelItem::SubscribeItemCreated(const ModelItemSlot& slot)
     //{
@@ -58,7 +48,7 @@ class Connection
     }
 #endif
 
-    tcp::socket& socket()
+    auto& socket()
     {
         return this->socket_;
     }
@@ -66,14 +56,16 @@ class Connection
     void accepted(boost::signals2::connection bcast_connection)
     {
 #ifdef VERBOSE_SERVER_DEBUG
-        std::stringstream ss;
+        {
+            std::stringstream ss;
 
-        ss << "[ Client " << this->GetId() << " ] "
-           << "Connected.";
-        std::string output = ss.str();
-        std::cout << output << std::endl;
-        output = "";
-        ss.str("");
+            ss << "[ Client " << this->GetId() << " ] "
+                << "Connected.";
+            std::string output = ss.str();
+            std::cout << output << std::endl;
+            output = "";
+            ss.str("");
+        }
 #endif
         this->c = bcast_connection;
         tcp::no_delay option(true);
@@ -92,39 +84,17 @@ class Connection
             this->alreadyDisconnected = true;
             boost::system::error_code ec;
 
-            try {
-                if (cancel) {
-                    this->socket_.cancel();
-                }
-            } catch (const std::exception& ex) {
-                std::cout << "[ Client " << this->GetId()
-                          << " ] Cancel Exception: " << ex.what() << std::endl;
+            if (cancel) {
+                this->socket_.cancel(ec);
             }
 
-            try {
-                if (shutdown) {
-                    this->socket_.shutdown(
-                        boost::asio::socket_base::shutdown_both, ec);
-                }
-
-                if (ec) {
-                    std::cout << " [ Client " << this->GetId()
-                              << " ] Shutdown Error: " << ec.value() << " - "
-                              << ec.message();
-                }
-            } catch (const std::exception& ex) {
-                std::cout << "[ Client " << this->GetId()
-                          << " ] Shutdown Exception: " << ex.what()
-                          << std::endl;
+            if (shutdown) {
+                this->socket_.shutdown(socket_t::shutdown_both,
+                                       ec);
             }
 
-            try {
-                if (close && !ec) {
-                    this->socket_.close();
-                }
-            } catch (const std::exception& ex) {
-                std::cout << "[ Client " << this->GetId()
-                          << " ] Close Exception: " << ex.what() << std::endl;
+            if (close && !ec) {
+                this->socket_.close(ec);
             }
 
             // this->broadcastSignal.disconnect(boost::bind(&Connection::Send,
@@ -173,15 +143,13 @@ class Connection
     Connection(Executor executor, int id,
                ClientMessageCallbackType      message_handle,
                ClientMessageSentCallbackType  messagesent_handle,
-               ClientDisconnectCallbackType   disconnect_handle,
-               ThreadSafeQueue<OwnedMessage>& qIn)
+               ClientDisconnectCallbackType   disconnect_handle
+            )
         : disconnect_handler(disconnect_handle)
         , message_handler(message_handle)
         , messagesent_handler(messagesent_handle)
-        , strand_(executor)
-        , socket_(strand_)
+        , socket_(executor)
         , connectionId(id)
-        , qMessagesIn(qIn)
     { }
 
     ClientDisconnectCallbackType  disconnect_handler;
@@ -264,7 +232,6 @@ class Connection
                        } else {
                 // As above!
 #ifdef VERBOSE_SERVER_DEBUG
-
                            std::stringstream ss;
                            ss << "[ Client " << this->GetId() << " ] "
                               << "Read Body Failed."
@@ -288,7 +255,7 @@ class Connection
         // to hold the message, and issue the work - asio, send these bytes
         if (!qMessagesOut.empty()) {
             auto message =
-                std::make_shared<Message<MsgId>>(qMessagesOut.pop_front());
+                boost::make_shared<Message<MsgId>>(qMessagesOut.pop_front());
             async_write(
                 socket_,
                 boost::asio::buffer(&message->message_header,
@@ -302,7 +269,7 @@ class Connection
                         // ... no error, so check if the message header just
                         // sent also has a message body...
                         if (!message->body.empty()) {
-                            auto message = std::make_shared<Message<MsgId>>();
+                            //auto message = boost::make_shared<Message<MsgId>>();
                             // message->body = qMessagesOut.front().body;
                             // message->message_header =
                             // qMessagesOut.front().message_header;
@@ -313,12 +280,9 @@ class Connection
                             // qMessagesOut.pop_front();
                         } else {
                             if (messagesent_handler) {
-                                OwnedMessage tempOutMsg{
-                                    this->shared_from_this(),
-                                    std::move(*message),
-                                };
-                                this->messagesent_handler(&tempOutMsg);
-                                message.reset();
+                                MsgPtr const& __message = message;;
+                                ConnPtr const& __conn = self;;
+                                this->messagesent_handler(__message, __conn);
                             }
                             // ...it didnt, so we are done with this message.
                             // Remove it from the outgoing message queue
@@ -331,14 +295,15 @@ class Connection
                             }
                         }
 #ifdef VERBOSE_SERVER_DEBUG
-
-                        std::stringstream ss;
-                        ss << "[ Client " << this->GetId() << " ] "
-                           << "Wrote " << length << " bytes. (header)";
-                        std::string output = ss.str();
-                        std::cout << output << std::endl;
-                        output = "";
-                        ss.str("");
+                        {
+                            std::stringstream ss;
+                            ss << "[ Client " << this->GetId() << " ] "
+                                << "Wrote " << length << " bytes. (header)";
+                            std::string output = ss.str();
+                            std::cout << output << std::endl;
+                            output = "";
+                            ss.str("");
+                        }
 #endif
                     } else {
                     // ...asio failed to write the message, we could analyse why
@@ -347,15 +312,16 @@ class Connection
                     // this client fails due to the closed socket, it will be
                     // tidied up.
 #ifdef VERBOSE_SERVER_DEBUG
-
-                        std::stringstream ss;
-                        ss << "[ Client " << this->GetId() << " ] "
-                           << "Write Header Fail."
-                           << " " << ec.value() << " - " << ec.message();
-                        std::string output = ss.str();
-                        std::cout << output << std::endl;
-                        output = "";
-                        ss.str("");
+                        {
+                            std::stringstream ss;
+                            ss << "[ Client " << this->GetId() << " ] "
+                                << "Write Header Fail."
+                                << " " << ec.value() << " - " << ec.message();
+                            std::string output = ss.str();
+                            std::cout << output << std::endl;
+                            output = "";
+                            ss.str("");
+                        }
 #endif
                         this->invalidState = true;
                         this->Disconnect(true, true, true);
@@ -365,7 +331,7 @@ class Connection
     }
 
     // ASYNC - Prime context to write a message body
-    void WriteBody(std::shared_ptr<Message<MsgId>> message)
+    void WriteBody(boost::shared_ptr<Message<MsgId>> message)
     {
         auto self = this->shared_from_this();
         // If this function is called, a header has just been sent, and that
@@ -377,12 +343,7 @@ class Connection
                                   [[maybe_unused]] std::size_t length) mutable {
                 if (!ec) {
                     if (messagesent_handler) {
-                        OwnedMessage tempOutMsg{
-                            this->shared_from_this(),
-                            std::move(*message),
-                        };
-                        this->messagesent_handler(&tempOutMsg);
-                        message.reset();
+                        this->messagesent_handler(message, self);
                     }
                     // Sending was successful, so we are done with the
                     // message and remove it from the queue
@@ -393,28 +354,30 @@ class Connection
                         WriteHeader();
                     }
 #ifdef VERBOSE_SERVER_DEBUG
-
-                    std::stringstream ss;
-                    ss << "[ Client " << this->GetId() << " ] "
-                       << "Wrote " << length << " bytes. (body)";
-                    std::string output = ss.str();
-                    std::cout << output << std::endl;
-                    output = "";
-                    ss.str("");
+                    {
+                        std::stringstream ss;
+                        ss << "[ Client " << this->GetId() << " ] "
+                           << "Wrote " << length << " bytes. (body)";
+                        std::string output = ss.str();
+                        std::cout << output << std::endl;
+                        output = "";
+                        ss.str("");
+                    }
 #endif
                 } else {
                 // Sending failed, see WriteHeader() equivalent for description
                 // :P
 #ifdef VERBOSE_SERVER_DEBUG
-
-                    std::stringstream ss;
-                    ss << "[ Client " << this->GetId() << " ] "
-                       << "Write Body Fail."
-                       << " " << ec.value() << " - " << ec.message();
-                    std::string output = ss.str();
-                    std::cout << output << std::endl;
-                    output = "";
-                    ss.str("");
+                    {
+                        std::stringstream ss;
+                        ss << "[ Client " << this->GetId() << " ] "
+                            << "Write Body Fail."
+                            << " " << ec.value() << " - " << ec.message();
+                        std::string output = ss.str();
+                        std::cout << output << std::endl;
+                        output = "";
+                        ss.str("");
+                    }
 #endif
                     this->invalidState = true;
                     this->Disconnect(true, true, true);
@@ -424,28 +387,23 @@ class Connection
 
     void AddToIncomingMessageQueue()
     {
-        OwnedMessage msg{this->shared_from_this(), tempInMsg};
-        // qMessagesIn.push_back(msg);
-
         if (message_handler) {
-            this->message_handler(msg);
+            this->message_handler(
+                boost::make_shared<Message<MsgId>>(std::move(tempInMsg)),
+                this->shared_from_this());
         }
 
-        msg.msg.body.clear();
-        msg.msg.message_header.size = 0;
         tempInMsg.body.clear();
         tempInMsg.message_header.size = 0;
     }
 
-    boost::asio::strand<Executor> strand_;
-    tcp::socket                   socket_;
+    socket_t socket_;
 
     int connectionId;
 
     Message<MsgId> tempInMsg;
     Message<MsgId> tempOutMsg;
 
-    ThreadSafeQueue<OwnedMessage>&  qMessagesIn;
     ThreadSafeQueue<Message<MsgId>> qMessagesOut;
 
     boost::signals2::connection c;
