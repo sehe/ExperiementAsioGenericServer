@@ -1,7 +1,5 @@
 // Server-Test.cpp : This file contains the 'main' function. Program execution
 // begins and ends there.
-//
-
 #include "prerequisites.h"
 #include <utility>
 
@@ -33,20 +31,21 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
         : MyServer::base_type(executor, std::move(ep))
     {
     }
-    void OnClientDisconnect(ConnPtr const& client) override
+
+    void OnClientDisconnect(ConnPtr const& remote) override
     {
-        std::cout << "[ Client  " << client->GetId() << " ] Disconnected"
+        std::cout << "[ Client  " << remote->GetId() << " ] Disconnected"
                   << std::endl;
     }
 
-    bool OnClientConnect(ConnPtr const& client) override
+    bool OnClientConnect(ConnPtr const& remote) override
     {
-        std::cout << "[ Client  " << client->GetId() << " ] Connected"
+        std::cout << "[ Client  " << remote->GetId() << " ] Connected"
                   << std::endl;
         Message msg;
         msg.message_header.id = MessageTypes::ServerAccept;
-        msg << client->GetId();
-        client->Send(msg);
+        msg << remote->GetId();
+        remote->Send(msg);
         return true;
     }
 
@@ -71,17 +70,17 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
 
 MyServer* srv;
 
-int                      messageCount;
+int                      messageCount       = 0;
 Clock::duration          previous_time      = 0s;
-// Clock::duration       highest_time       = 0s;
-// int                   total_thread_count = 0;
-// size_t                max_thread_count   = 1;
 std::atomic_bool         stop               = false;
 boost::asio::thread_pool context;
+//Clock::duration          highest_time       = 0s;
+//int                      total_thread_count = 0;
+//size_t                   max_thread_count   = 1;
 
 boost::asio::high_resolution_timer timer(context, 1s);
 
-void timedBcast(const boost::system::error_code& e)
+void timedBcast(error_code e)
 {
     // std::cout << "Beginning BCAST..." << std::endl;
     Clock::time_point const tStart = Clock::now();
@@ -139,7 +138,7 @@ int main()
     srv = new MyServer(context.get_executor(), ep);
 
     std::cout << "Hello World!\n";
-    timer.expires_from_now(5s);
+    timer.expires_from_now(1s);
     timer.async_wait(timedBcast);
 
     std::string str;
@@ -153,21 +152,7 @@ int main()
     context.stop();
 
     context.join();
-    str = "";
     std::getline(std::cin, str);
     delete srv;
     return 0;
 }
-
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
-
-// Tips for Getting Started:
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add
-//   Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project
-//   and select the .sln file

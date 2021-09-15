@@ -7,7 +7,7 @@ template <typename Message, typename Executor> class Server {
     using Strand     = boost::asio::strand<Executor>;
     using conn_t     = Connection<Message, Strand>;
     using MsgPtr     = typename conn_t::MsgPtr;
-    using ConnPtr    = boost::shared_ptr<conn_t>;
+    using ConnPtr    = std::shared_ptr<conn_t>;
 
   public:
     Server(Executor executor, tcp::endpoint endpoint)
@@ -33,7 +33,7 @@ template <typename Message, typename Executor> class Server {
         acceptor_.cancel();
         acceptor_.close();
         {
-            std::lock_guard<std::mutex> lk(connectionMutex);
+            std::lock_guard lk(connectionMutex);
             for (const auto& [key, value] : connections) {
                 value->Disconnect(true, true, true);
             }
@@ -48,7 +48,7 @@ template <typename Message, typename Executor> class Server {
         size_t total = 0;
         size_t count = 0;
         {
-            std::lock_guard<std::mutex> lk(connectionMutex);
+            std::lock_guard lk(connectionMutex);
             for (const auto& [key, value] : connections) {
                 if (!value->IsInvalid()) {
                     size_t backlog = value->GetSendBacklog();
@@ -66,7 +66,7 @@ template <typename Message, typename Executor> class Server {
 
     void BroadcastMessage(Message const& msg)
     {
-        std::lock_guard<std::mutex> lk(connectionMutex);
+        std::lock_guard lk(connectionMutex);
 
         for (const auto& [key, value] : connections) {
             if (!value->IsInvalid()) {
@@ -88,10 +88,10 @@ template <typename Message, typename Executor> class Server {
 
     // Called when a client connects, you can veto the connection by returning
     // false
-    virtual bool OnClientConnect(ConnPtr const& /*client*/) { return false; }
+    virtual bool OnClientConnect(ConnPtr const& /*remote*/) { return false; }
 
     // Called when a client appears to have disconnected
-    virtual void OnClientDisconnect(ConnPtr const& /*client*/) { }
+    virtual void OnClientDisconnect(ConnPtr const& /*remote*/) { }
 
     // Called when a message arrives
     virtual void OnMessage(MsgPtr const& /*message*/, ConnPtr const&) { }
@@ -169,7 +169,7 @@ template <typename Message, typename Executor> class Server {
     void addConnection(ConnPtr connection)
     {
         if (!shutdownBegan) {
-            std::lock_guard<std::mutex> lk(connectionMutex);
+            std::lock_guard lk(connectionMutex);
             connections.emplace(connection->GetId(),
                                       std::move(connection));
         }
@@ -180,7 +180,7 @@ template <typename Message, typename Executor> class Server {
     void removeConnectionById(int id)
     {
         if (!shutdownBegan) {
-            std::lock_guard<std::mutex> lk(connectionMutex);
+            std::lock_guard lk(connectionMutex);
             connections.erase(id);
         }
     }

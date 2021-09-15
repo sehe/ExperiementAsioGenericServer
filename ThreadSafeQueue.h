@@ -1,5 +1,6 @@
 #pragma once
 #include "prerequisites.h"
+#include <deque>
 
 template <typename T> class ThreadSafeQueue {
   public:

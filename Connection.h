@@ -2,18 +2,18 @@
 #include "prerequisites.h"
 template <typename Message, typename Executor>
 class Connection
-    : public boost::enable_shared_from_this<Connection<Message, Executor>> //
+    : public std::enable_shared_from_this<Connection<Message, Executor>> //
 {
-    using boost::enable_shared_from_this<Connection>::shared_from_this;
+    using std::enable_shared_from_this<Connection>::shared_from_this;
     using socket_t = boost::asio::basic_stream_socket<tcp, Executor>;
 
   public:
-    using ConnPtr = boost::shared_ptr<Connection>;
-    using MsgPtr  = boost::shared_ptr<Message>;
+    using ConnPtr = std::shared_ptr<Connection>;
+    using MsgPtr  = std::shared_ptr<Message>;
 
-    using ClientMessageCallbackType     = boost::function<void(MsgPtr const&, ConnPtr const&)>;
-    using ClientMessageSentCallbackType = boost::function<void(MsgPtr const&, ConnPtr const&)>;
-    using ClientDisconnectCallbackType  = boost::function<void(ConnPtr const&)>;
+    using ClientMessageCallbackType     = std::function<void(MsgPtr const&, ConnPtr const&)>;
+    using ClientMessageSentCallbackType = std::function<void(MsgPtr const&, ConnPtr const&)>;
+    using ClientDisconnectCallbackType  = std::function<void(ConnPtr const&)>;
 
     enum class owner { server, client };
 
@@ -27,10 +27,6 @@ class Connection
             executor, id, message_handle, messagesent_handle,
             disconnect_handle));
     }
-    // void ModelItem::SubscribeItemCreated(const ModelItemSlot& slot)
-    //{
-    //    _itemCreated.connect(slot);
-    //}
 
     socket_t& socket() { return socket_; }
     int GetId() { return connectionId; }
@@ -60,7 +56,7 @@ class Connection
     {
         qMessagesOut.clear();
         if (socket_.is_open() && !alreadyDisconnected.exchange(true)) {
-            boost::system::error_code ec;
+            error_code ec;
 
             if (cancel) {
                 socket_.cancel(ec);
@@ -101,7 +97,7 @@ class Connection
     {
         qMessagesOut.push_back(msg);
         if (qMessagesOut.count() == 1) { // SEHE TODO FIXME Race condition
-            WriteHeader();
+            WriteMessage();
         }
     }
     size_t GetSendBacklog()
@@ -133,236 +129,98 @@ class Connection
     ClientMessageCallbackType     message_handler;
     ClientMessageSentCallbackType messagesent_handler;
 
+    bool Report([[maybe_unused]] std::string_view caption, error_code ec,
+                [[maybe_unused]] auto&&... what)
+    {
+        if (ec) {
+#ifdef VERBOSE_SERVER_DEBUG
+            std::cout << "[ Client " << GetId() << " ] " << caption
+                      << " Failed"
+                      << ec.value() << " - " << ec.message()
+                      << std::endl;
+#endif
+            invalidState = true;
+            Disconnect(true, true, true);
+            return false;
+        }
+
+#ifdef VERBOSE_SERVER_DEBUG
+        {
+            [[maybe_unused]] auto print_arg = [](auto&& v) {
+                std::cout << " " << v;
+                return std::cout.good();
+            };
+
+            std::cout << "[ Client " << GetId() << " ] " << caption << " Success";
+            std::cout << " " << ec.value() << " - " << ec.message();
+            if ((true && ... && print_arg(what)))
+                std::cout << std::endl;
+        }
+#endif
+        return true;
+    }
+
     void ReadHeader()
     {
-        auto self = shared_from_this();
-
-        async_read(socket_,
-                   boost::asio::buffer(&tempInMsg.message_header,
-                                       sizeof(tempInMsg.message_header)),
-                   [this, self](std::error_code ec, std::size_t /*length*/) {
-                       if (!ec) {
-                           // A complete message header has been read, check if
-                           // this message has a body to follow...
-                           if (tempInMsg.message_header.size > 0) {
-                               // ...it does, so allocate enough space in the
-                               // messages' body vector, and issue asio with the
-                               // task to read the body.
-                               tempInMsg.body.resize(
-                                   tempInMsg.message_header.size);
-                               ReadBody();
-                           } else {
-                               // it doesn't, so add this bodyless message to
-                               // the connections incoming message queue
-                               AddToIncomingMessageQueue();
-                               // Go back to waiting for header
-                               ReadHeader();
-                           }
-                       } else {
-                // Reading form the client went wrong, most likely a disconnect
-                // has occurred. Close the socket and let the system tidy it up
-                // later.
-#ifdef VERBOSE_SERVER_DEBUG
-
-                           std::stringstream ss;
-
-                           ss << "[ Client " << GetId() << " ] "
-                              << "Read Header Failed."
-                              << " " << ec.value() << " - " << ec.message();
-                           std::string output = ss.str();
-                           std::cout << output << std::endl;
-                           output = "";
-                           ss.str("");
-#endif
-                           invalidState = true;
-                           Disconnect(false, true, true);
-                       }
-                   });
+        async_read( //
+            socket_,
+            boost::asio::buffer(&tempInMsg.message_header,
+                                sizeof(tempInMsg.message_header)),
+            [this, self = shared_from_this()](error_code ec, std::size_t) {
+                if (Report("Read Header", ec)) {
+                    tempInMsg.body.resize(tempInMsg.message_header.size);
+                    ReadBody();
+                }
+            });
     }
 
     void ReadBody()
     {
-        auto self = shared_from_this();
-        async_read(socket_, boost::asio::buffer(tempInMsg.body),
-                   [this, self](std::error_code ec, std::size_t /*length*/) {
-                       if (!ec) {
-                           // ...and they have! The message is now complete, so
-                           // add the whole message to incoming queue
-                           AddToIncomingMessageQueue();
+        async_read( //
+            socket_, boost::asio::buffer(tempInMsg.body),
+            [this, self = shared_from_this()](error_code ec, std::size_t) {
+                if (Report("Read Body", ec, tempInMsg.body.data())) {
+                    CommitIncoming();
 
-#ifdef VERBOSE_SERVER_DEBUG
-
-                           std::stringstream ss;
-
-                           ss << "[ Client " << GetId()
-                              << " ] SENT: " << tempInMsg.body.data();
-
-                           std::string output = ss.str();
-                           std::cout << output << std::endl;
-                           output = "";
-                           ss.str("");
-#endif
-                           // Go Back to waiting for header
-                           ReadHeader();
-                       } else {
-                // As above!
-#ifdef VERBOSE_SERVER_DEBUG
-                           std::stringstream ss;
-                           ss << "[ Client " << GetId() << " ] "
-                              << "Read Body Failed."
-                              << " " << ec.value() << " - " << ec.message();
-                           std::string output = ss.str();
-                           std::cout << output << std::endl;
-                           output = "";
-                           ss.str("");
-#endif
-                           invalidState = true;
-                           Disconnect(false, true, true);
-                       }
-                   });
+                    // Go Back to waiting for header
+                    ReadHeader();
+                }
+            });
     }
 
-    void WriteHeader()
+    void WriteMessage()
     {
-        auto self = shared_from_this();
         // If this function is called, we know the outgoing message queue must
         // have at least one message to send. So allocate a transmission buffer
         // to hold the message, and issue the work - asio, send these bytes
         if (!qMessagesOut.empty()) {
-            auto message =
-                boost::make_shared<Message>(qMessagesOut.pop_front());
-            async_write(
-                socket_,
+            auto message = std::make_shared<Message>(qMessagesOut.pop_front());
+
+            std::vector bufs = {
                 boost::asio::buffer(&message->message_header,
                                     sizeof(message->message_header)),
-                [this, self,
-                 message](std::error_code              ec,
-                          [[maybe_unused]] std::size_t length) mutable {
-                    // asio has now sent the bytes - if there was a problem
-                    // an error would be available...
-                    if (!ec) {
-                        // ... no error, so check if the message header just
-                        // sent also has a message body...
-                        if (!message->body.empty()) {
-                            //auto message = boost::make_shared<Message>();
-                            // message->body = qMessagesOut.front().body;
-                            // message->message_header =
-                            // qMessagesOut.front().message_header;
-                            // message->TransactionId = msg.TransactionId;
-                            // ...it does, so issue the task to write the body
-                            // bytes
-                            WriteBody(std::move(message));
-                            // qMessagesOut.pop_front();
-                        } else {
-                            if (messagesent_handler) {
-                                messagesent_handler(message, self);
-                            }
-                            // ...it didnt, so we are done with this message.
-                            // Remove it from the outgoing message queue
+                boost::asio::buffer(message->body),
+            };
 
-                            // If the queue is not empty, there are more
-                            // messages to send, so make this happen by issuing
-                            // the task to send the next header.
-                            if (!qMessagesOut.empty()) {
-                                WriteHeader();
-                            }
+            async_write( //
+                socket_, bufs,
+                [this, self = shared_from_this(),
+                 message](error_code ec, std::size_t length) mutable {
+                    if (Report("WriteMessage", ec, "Wrote", length, "bytes")) {
+                        if (!qMessagesOut.empty()) {
+                            // TODO FIXME Race condition?
+                            WriteMessage();
                         }
-#ifdef VERBOSE_SERVER_DEBUG
-                        {
-                            std::stringstream ss;
-                            ss << "[ Client " << GetId() << " ] "
-                               << "Wrote " << length << " bytes. (header)";
-                            std::string output = ss.str();
-                            std::cout << output << std::endl;
-                            output = "";
-                            ss.str("");
-                        }
-#endif
-                    } else {
-                    // ...asio failed to write the message, we could analyse why
-                    // but for now simply assume the connection has died by
-                    // closing the socket. When a future attempt to write to
-                    // this client fails due to the closed socket, it will be
-                    // tidied up.
-#ifdef VERBOSE_SERVER_DEBUG
-                        {
-                            std::stringstream ss;
-                            ss << "[ Client " << GetId() << " ] "
-                                << "Write Header Fail."
-                                << " " << ec.value() << " - " << ec.message();
-                            std::string output = ss.str();
-                            std::cout << output << std::endl;
-                            output = "";
-                            ss.str("");
-                        }
-#endif
-                        invalidState = true;
-                        Disconnect(true, true, true);
                     }
                 });
         }
     }
 
-    // ASYNC - Prime context to write a message body
-    void WriteBody(boost::shared_ptr<Message> message)
-    {
-        auto self = shared_from_this();
-        // If this function is called, a header has just been sent, and that
-        // header indicated a body existed for this message. Fill a transmission
-        // buffer with the body data, and send it!
-        async_write(
-            socket_, boost::asio::buffer(message->body),
-            [this, self, message](std::error_code              ec,
-                                  [[maybe_unused]] std::size_t length) mutable {
-                if (!ec) {
-                    if (messagesent_handler) {
-                        messagesent_handler(message, self);
-                    }
-                    // Sending was successful, so we are done with the
-                    // message and remove it from the queue
-
-                    // If the queue still has messages in it, then issue the
-                    // task to send the next messages' header.
-                    if (!qMessagesOut.empty()) { // TODO FIXME Race condition
-                        WriteHeader();
-                    }
-#ifdef VERBOSE_SERVER_DEBUG
-                    {
-                        std::stringstream ss;
-                        ss << "[ Client " << GetId() << " ] "
-                           << "Wrote " << length << " bytes. (body)";
-                        std::string output = ss.str();
-                        std::cout << output << std::endl;
-                        output = "";
-                        ss.str("");
-                    }
-#endif
-                } else {
-                // Sending failed, see WriteHeader() equivalent for description
-                // :P
-#ifdef VERBOSE_SERVER_DEBUG
-                    {
-                        std::stringstream ss;
-                        ss << "[ Client " << GetId() << " ] "
-                            << "Write Body Fail."
-                            << " " << ec.value() << " - " << ec.message();
-                        std::string output = ss.str();
-                        std::cout << output << std::endl;
-                        output = "";
-                        ss.str("");
-                    }
-#endif
-                    invalidState = true;
-                    Disconnect(true, true, true);
-                }
-            });
-    }
-
-    void AddToIncomingMessageQueue()
+    void CommitIncoming()
     {
         if (message_handler) {
             message_handler(
-                boost::make_shared<Message>(std::move(tempInMsg)),
+                std::make_shared<Message>(std::move(tempInMsg)),
                 shared_from_this());
         }
 
