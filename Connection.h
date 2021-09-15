@@ -31,7 +31,7 @@ class Connection
     socket_t& socket() { return socket_; }
     int GetId() { return connectionId; }
 
-    void accepted(boost::signals2::connection bcast_connection)
+    void accepted()
     {
 #ifdef VERBOSE_SERVER_DEBUG
         {
@@ -45,7 +45,6 @@ class Connection
             ss.str("");
         }
 #endif
-        c = bcast_connection;
         tcp::no_delay option(true);
         socket_.set_option(option);
 
@@ -70,10 +69,6 @@ class Connection
                 socket_.close(ec);
             }
 
-            // broadcastSignal.disconnect(boost::bind(&Connection::Send,
-            // this); UnRegisterBroadcastSignal(broadcastSignal, this);
-            c.disconnect();
-
 #ifdef VERBOSE_SERVER_DEBUG
             std::stringstream ss;
             ss << "[ Client " << GetId() << " ] "
@@ -93,9 +88,9 @@ class Connection
     {
         return !socket_.is_open() || invalidState;
     }
-    void Send(const Message& msg)
+    void Send(MsgPtr msg)
     {
-        qMessagesOut.push_back(msg);
+        qMessagesOut.push_back(std::move(msg));
         if (qMessagesOut.count() == 1) { // SEHE TODO FIXME Race condition
             WriteMessage();
         }
@@ -194,7 +189,7 @@ class Connection
         // have at least one message to send. So allocate a transmission buffer
         // to hold the message, and issue the work - asio, send these bytes
         if (!qMessagesOut.empty()) {
-            auto message = std::make_shared<Message>(qMessagesOut.pop_front());
+            auto message = qMessagesOut.pop_front();
 
             std::vector bufs = {
                 boost::asio::buffer(&message->message_header,
@@ -235,9 +230,7 @@ class Connection
     Message tempInMsg;
     Message tempOutMsg;
 
-    ThreadSafeQueue<Message> qMessagesOut;
-
-    boost::signals2::connection c;
+    ThreadSafeQueue<MsgPtr> qMessagesOut;
 
     std::atomic_bool invalidState        = false;
     std::atomic_bool alreadyDisconnected = false;

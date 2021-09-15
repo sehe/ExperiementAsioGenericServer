@@ -40,12 +40,15 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
 
     bool OnClientConnect(ConnPtr const& remote) override
     {
-        std::cout << "[ Client  " << remote->GetId() << " ] Connected"
-                  << std::endl;
-        Message msg;
-        msg.message_header.id = MessageTypes::ServerAccept;
-        msg << remote->GetId();
-        remote->Send(msg);
+        std::cout << "[ Client  " << remote->GetId() << " ] Connected" << std::endl;
+
+        {
+            auto msg = std::make_shared<Message>();
+            msg->message_header.id = MessageTypes::ServerAccept;
+            (*msg) << remote->GetId();
+
+            remote->Send(std::move(msg));
+        }
         return true;
     }
 
@@ -56,7 +59,7 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
             std::string message = msg->GetString(0);
             std::cout << " Received Message" << std::endl;
             message = "";
-            remote->Send(*msg); // fire it back to the client
+            remote->Send(msg); // fire it back to the client
         }
     }
 
@@ -84,11 +87,11 @@ void timedBcast(error_code e)
 {
     // std::cout << "Beginning BCAST..." << std::endl;
     Clock::time_point const tStart = Clock::now();
+    Clock::time_point tPrepared    = tStart;
 
     if (!e && !stop) {
 
         if (srv != nullptr) {
-
             if (messageCount >= 1000) {
                 messageCount = 0;
             }
@@ -96,14 +99,16 @@ void timedBcast(error_code e)
             // std::cout << "SENDING BCAST" << std::endl;
             // std::string message = "HELLO WORLD TO ALL BROADCAST! ";
             // message += std::to_string(messageCount++);
+            {
+                auto msg = std::make_shared<Message<MessageTypes>>();
 
-            Message<MessageTypes> msg;
-            msg.message_header.id = MessageTypes::MessageAll;
-            msg.Append(std::string(rand() % 102400 + 81920, 'a') + " " +
-                       std::to_string(messageCount++));
-            //msg.TransactionId = "Broadcast";
-            Clock::time_point tPrepared = Clock::now();
-            srv->BroadcastMessage(msg);
+                msg->message_header.id = MessageTypes::MessageAll;
+                msg->Append(std::string(rand() % 102400 + 81920, 'a') + " " +
+                        std::to_string(messageCount++));
+                //msg.TransactionId = "Broadcast";
+                tPrepared = Clock::now();
+                srv->BroadcastMessage(std::move(msg));
+            }
 
             auto const tDone = Clock::now();
             auto const time  = tDone - tPrepared;

@@ -64,7 +64,7 @@ template <typename Message, typename Executor> class Server {
         return 0;
     }
 
-    void BroadcastMessage(Message const& msg)
+    void BroadcastMessage(MsgPtr msg)
     {
         std::lock_guard lk(connectionMutex);
 
@@ -141,9 +141,7 @@ template <typename Message, typename Executor> class Server {
             start_accept();
             using boost::placeholders::_1;
             if (OnClientConnect(new_connection)) {
-                boost::signals2::connection c = bcast.connect(
-                    boost::bind(&conn_t::Send, new_connection, _1));
-                new_connection->accepted(c);
+                new_connection->accepted();
                 addConnection(std::move(new_connection));
 
             } else {
@@ -205,6 +203,4 @@ template <typename Message, typename Executor> class Server {
         Message msg;
     };
     ThreadSafeQueue<OwnedMessage> qMessagesIn; // why is this here?
-
-    boost::signals2::signal<void(Message&)> bcast;
 };
