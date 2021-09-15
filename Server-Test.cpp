@@ -25,8 +25,10 @@ enum class MessageTypes : uint32_t {
 
 using Executor = boost::asio::thread_pool::executor_type;
 
-class MyServer : public Server<MessageTypes, Executor> {
+class MyServer : public Server<Message<MessageTypes>, Executor> {
   public:
+    using Message = ::Message<MessageTypes>;
+
     MyServer(Executor executor, tcp::endpoint ep)
         : MyServer::base_type(executor, std::move(ep))
     {
@@ -36,16 +38,18 @@ class MyServer : public Server<MessageTypes, Executor> {
         std::cout << "[ Client  " << client->GetId() << " ] Disconnected"
                   << std::endl;
     }
+
     bool OnClientConnect(ConnPtr const& client) override
     {
         std::cout << "[ Client  " << client->GetId() << " ] Connected"
                   << std::endl;
-        Message<MessageTypes> msg;
+        Message msg;
         msg.message_header.id = MessageTypes::ServerAccept;
         msg << client->GetId();
         client->Send(msg);
         return true;
     }
+
     void OnMessage(MsgPtr const& msg, ConnPtr const& remote) override
     {
         std::cout << "[ Client " << remote->GetId() << " ] ";
@@ -94,13 +98,11 @@ void timedBcast(const boost::system::error_code& e)
             // std::string message = "HELLO WORLD TO ALL BROADCAST! ";
             // message += std::to_string(messageCount++);
 
-            std::string message = std::string(rand() % 102400 + 81920, 'a');
-            message += " ";
-            message += std::to_string(messageCount++);
             Message<MessageTypes> msg;
             msg.message_header.id = MessageTypes::MessageAll;
-            msg.Append(message);
-            msg.TransactionId = "Broadcast";
+            msg.Append(std::string(rand() % 102400 + 81920, 'a') + " " +
+                       std::to_string(messageCount++));
+            //msg.TransactionId = "Broadcast";
             Clock::time_point tPrepared = Clock::now();
             srv->BroadcastMessage(msg);
 

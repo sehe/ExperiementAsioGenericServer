@@ -2,14 +2,12 @@
 #include "prerequisites.h"
 template <typename MsgId> struct Message {
 
-    [[nodiscard]] size_t size() const
-    {
-        return this->body.size();
-    }
+    [[nodiscard]] size_t size() const { return body.size(); }
     MessageHeader<MsgId>       message_header{};
     std::vector<unsigned char> body;
-    std::string                TransactionId;
-    void                       Append(const char* data)
+    //std::string                TransactionId;
+
+    void Append(const char* data)
     {
         size_t i           = body.size();
         size_t data_length = strlen(data);
@@ -18,11 +16,13 @@ template <typename MsgId> struct Message {
         std::memcpy(body.data() + sizeof(size_t) + i, data, data_length);
         message_header.size = (uint32_t)size();
     }
-    void Append(std::string& data)
+
+    void Append(std::string const& data)
     {
         const char* data_cStr = data.c_str();
         Append(data_cStr);
     }
+
     void GetString(size_t offset, std::string& dst)
     {
         if (body.size() >= offset + sizeof(size_t)) {
@@ -36,6 +36,7 @@ template <typename MsgId> struct Message {
         std::string error = "ERROR";
         dst.assign(error);
     }
+
     std::string GetString(size_t offset)
     {
         if (body.size() >= offset + sizeof(size_t)) {
@@ -95,7 +96,7 @@ template <typename MsgId> struct Message {
 
     // Pulls any POD-like data form the message buffer
     template <typename DataType>
-    friend Message<MsgId>& operator>>(Message<MsgId>& msg, DataType& data)
+    friend Message& operator>>(Message& msg, DataType& data)
     {
         // Check that the type of the data being pushed is trivially copyable
         static_assert(std::is_standard_layout<DataType>::value,

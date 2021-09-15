@@ -1,14 +1,15 @@
 #pragma once
 #include "prerequisites.h"
-template <typename MsgId, typename Executor>
+template <typename Message, typename Executor>
 class Connection
-    : public boost::enable_shared_from_this<Connection<MsgId, Executor>> //
+    : public boost::enable_shared_from_this<Connection<Message, Executor>> //
 {
+    using boost::enable_shared_from_this<Connection>::shared_from_this;
     using socket_t = boost::asio::basic_stream_socket<tcp, Executor>;
 
   public:
-    using ConnPtr = boost::shared_ptr<Connection<MsgId, Executor>>;
-    using MsgPtr  = boost::shared_ptr<Message<MsgId>>;
+    using ConnPtr = boost::shared_ptr<Connection>;
+    using MsgPtr  = boost::shared_ptr<Message>;
 
     using ClientMessageCallbackType     = boost::function<void(MsgPtr const&, ConnPtr const&)>;
     using ClientMessageSentCallbackType = boost::function<void(MsgPtr const&, ConnPtr const&)>;
@@ -22,7 +23,7 @@ class Connection
                           ClientDisconnectCallbackType  disconnect_handle)
     {
         // should be make_shared, but not posisble due to private constructor
-        return ConnPtr(new Connection<MsgId, Executor>(
+        return ConnPtr(new Connection(
             executor, id, message_handle, messagesent_handle,
             disconnect_handle));
     }
@@ -31,27 +32,8 @@ class Connection
     //    _itemCreated.connect(slot);
     //}
 
-#if 0
-    RegisterBroadcastSignal(boost::signals2::signal<void(Message<T>&)>& signal,
-    Connection<T>* connection)
-    {
-        //bind(&ModelItem::OnItemCreated, listener, _1)
-        RegisterSignals(signal,boost::bind(&Connection<T>::Send, connection, boost::placeholders::_1));
-    }
-    void UnRegisterBroadcastSignal(Connection<T>* connection)
-    {
-        //signal.disconnect(boost::bind(&Connection::Send, connection, boost::placeholders::_1));
-    }
-    static void RegisterSignals(boost::signals2::signal<void(Message<T>&)>& signal,boost::signals2::signal<void(Message<T>&)>::slot_type& slot)
-    {
-        signal.connect(slot);
-    }
-#endif
-
-    auto& socket()
-    {
-        return this->socket_;
-    }
+    socket_t& socket() { return socket_; }
+    int GetId() { return connectionId; }
 
     void accepted(boost::signals2::connection bcast_connection)
     {
@@ -59,7 +41,7 @@ class Connection
         {
             std::stringstream ss;
 
-            ss << "[ Client " << this->GetId() << " ] "
+            ss << "[ Client " << GetId() << " ] "
                 << "Connected.";
             std::string output = ss.str();
             std::cout << output << std::endl;
@@ -67,43 +49,38 @@ class Connection
             ss.str("");
         }
 #endif
-        this->c = bcast_connection;
+        c = bcast_connection;
         tcp::no_delay option(true);
-        this->socket_.set_option(option);
-        this->ReadHeader();
+        socket_.set_option(option);
+
+        ReadHeader();
     }
 
-    int GetId()
-    {
-        return this->connectionId;
-    }
     void Disconnect(bool cancel, bool shutdown, bool close)
     {
-        this->qMessagesOut.clear();
-        if (this->socket_.is_open() && !this->alreadyDisconnected) {
-            this->alreadyDisconnected = true;
+        qMessagesOut.clear();
+        if (socket_.is_open() && !alreadyDisconnected.exchange(true)) {
             boost::system::error_code ec;
 
             if (cancel) {
-                this->socket_.cancel(ec);
+                socket_.cancel(ec);
             }
 
             if (shutdown) {
-                this->socket_.shutdown(socket_t::shutdown_both,
-                                       ec);
+                socket_.shutdown(socket_t::shutdown_both, ec);
             }
 
             if (close && !ec) {
-                this->socket_.close(ec);
+                socket_.close(ec);
             }
 
-            // this->broadcastSignal.disconnect(boost::bind(&Connection::Send,
-            // this); UnRegisterBroadcastSignal(this->broadcastSignal, this);
-            this->c.disconnect();
+            // broadcastSignal.disconnect(boost::bind(&Connection::Send,
+            // this); UnRegisterBroadcastSignal(broadcastSignal, this);
+            c.disconnect();
 
 #ifdef VERBOSE_SERVER_DEBUG
             std::stringstream ss;
-            ss << "[ Client " << this->GetId() << " ] "
+            ss << "[ Client " << GetId() << " ] "
                << "Disconnected.";
             std::string output = ss.str();
             std::cout << output << std::endl;
@@ -111,16 +88,16 @@ class Connection
             ss.str("");
 #endif
             if (disconnect_handler) {
-                this->disconnect_handler(this->shared_from_this());
+                disconnect_handler(shared_from_this());
             }
         }
-        this->invalidState = true;
+        invalidState = true;
     }
     bool IsInvalid() const
     {
-        return !this->socket_.is_open() || this->invalidState;
+        return !socket_.is_open() || invalidState;
     }
-    void Send(const Message<MsgId>& msg)
+    void Send(const Message& msg)
     {
         qMessagesOut.push_back(msg);
         if (qMessagesOut.count() == 1) { // SEHE TODO FIXME Race condition
@@ -158,28 +135,28 @@ class Connection
 
     void ReadHeader()
     {
-        auto self = this->shared_from_this();
+        auto self = shared_from_this();
 
         async_read(socket_,
-                   boost::asio::buffer(&this->tempInMsg.message_header,
-                                       sizeof(MessageHeader<MsgId>)),
+                   boost::asio::buffer(&tempInMsg.message_header,
+                                       sizeof(tempInMsg.message_header)),
                    [this, self](std::error_code ec, std::size_t /*length*/) {
                        if (!ec) {
                            // A complete message header has been read, check if
                            // this message has a body to follow...
-                           if (this->tempInMsg.message_header.size > 0) {
+                           if (tempInMsg.message_header.size > 0) {
                                // ...it does, so allocate enough space in the
                                // messages' body vector, and issue asio with the
                                // task to read the body.
-                               this->tempInMsg.body.resize(
-                                   this->tempInMsg.message_header.size);
-                               this->ReadBody();
+                               tempInMsg.body.resize(
+                                   tempInMsg.message_header.size);
+                               ReadBody();
                            } else {
                                // it doesn't, so add this bodyless message to
                                // the connections incoming message queue
                                AddToIncomingMessageQueue();
                                // Go back to waiting for header
-                               this->ReadHeader();
+                               ReadHeader();
                            }
                        } else {
                 // Reading form the client went wrong, most likely a disconnect
@@ -189,7 +166,7 @@ class Connection
 
                            std::stringstream ss;
 
-                           ss << "[ Client " << this->GetId() << " ] "
+                           ss << "[ Client " << GetId() << " ] "
                               << "Read Header Failed."
                               << " " << ec.value() << " - " << ec.message();
                            std::string output = ss.str();
@@ -197,18 +174,16 @@ class Connection
                            output = "";
                            ss.str("");
 #endif
-                           this->invalidState = true;
-                           this->Disconnect(false, true, true);
+                           invalidState = true;
+                           Disconnect(false, true, true);
                        }
                    });
     }
 
     void ReadBody()
     {
-        auto self = this->shared_from_this();
-        async_read(socket_,
-                   boost::asio::buffer(this->tempInMsg.body.data(),
-                                       this->tempInMsg.body.size()),
+        auto self = shared_from_this();
+        async_read(socket_, boost::asio::buffer(tempInMsg.body),
                    [this, self](std::error_code ec, std::size_t /*length*/) {
                        if (!ec) {
                            // ...and they have! The message is now complete, so
@@ -219,8 +194,8 @@ class Connection
 
                            std::stringstream ss;
 
-                           ss << "[ Client " << this->GetId()
-                              << " ] SENT: " << this->tempInMsg.body.data();
+                           ss << "[ Client " << GetId()
+                              << " ] SENT: " << tempInMsg.body.data();
 
                            std::string output = ss.str();
                            std::cout << output << std::endl;
@@ -228,12 +203,12 @@ class Connection
                            ss.str("");
 #endif
                            // Go Back to waiting for header
-                           this->ReadHeader();
+                           ReadHeader();
                        } else {
                 // As above!
 #ifdef VERBOSE_SERVER_DEBUG
                            std::stringstream ss;
-                           ss << "[ Client " << this->GetId() << " ] "
+                           ss << "[ Client " << GetId() << " ] "
                               << "Read Body Failed."
                               << " " << ec.value() << " - " << ec.message();
                            std::string output = ss.str();
@@ -241,21 +216,21 @@ class Connection
                            output = "";
                            ss.str("");
 #endif
-                           this->invalidState = true;
-                           this->Disconnect(false, true, true);
+                           invalidState = true;
+                           Disconnect(false, true, true);
                        }
                    });
     }
 
     void WriteHeader()
     {
-        auto self = this->shared_from_this();
+        auto self = shared_from_this();
         // If this function is called, we know the outgoing message queue must
         // have at least one message to send. So allocate a transmission buffer
         // to hold the message, and issue the work - asio, send these bytes
         if (!qMessagesOut.empty()) {
             auto message =
-                boost::make_shared<Message<MsgId>>(qMessagesOut.pop_front());
+                boost::make_shared<Message>(qMessagesOut.pop_front());
             async_write(
                 socket_,
                 boost::asio::buffer(&message->message_header,
@@ -269,7 +244,7 @@ class Connection
                         // ... no error, so check if the message header just
                         // sent also has a message body...
                         if (!message->body.empty()) {
-                            //auto message = boost::make_shared<Message<MsgId>>();
+                            //auto message = boost::make_shared<Message>();
                             // message->body = qMessagesOut.front().body;
                             // message->message_header =
                             // qMessagesOut.front().message_header;
@@ -280,9 +255,7 @@ class Connection
                             // qMessagesOut.pop_front();
                         } else {
                             if (messagesent_handler) {
-                                MsgPtr const& __message = message;;
-                                ConnPtr const& __conn = self;;
-                                this->messagesent_handler(__message, __conn);
+                                messagesent_handler(message, self);
                             }
                             // ...it didnt, so we are done with this message.
                             // Remove it from the outgoing message queue
@@ -297,8 +270,8 @@ class Connection
 #ifdef VERBOSE_SERVER_DEBUG
                         {
                             std::stringstream ss;
-                            ss << "[ Client " << this->GetId() << " ] "
-                                << "Wrote " << length << " bytes. (header)";
+                            ss << "[ Client " << GetId() << " ] "
+                               << "Wrote " << length << " bytes. (header)";
                             std::string output = ss.str();
                             std::cout << output << std::endl;
                             output = "";
@@ -314,7 +287,7 @@ class Connection
 #ifdef VERBOSE_SERVER_DEBUG
                         {
                             std::stringstream ss;
-                            ss << "[ Client " << this->GetId() << " ] "
+                            ss << "[ Client " << GetId() << " ] "
                                 << "Write Header Fail."
                                 << " " << ec.value() << " - " << ec.message();
                             std::string output = ss.str();
@@ -323,17 +296,17 @@ class Connection
                             ss.str("");
                         }
 #endif
-                        this->invalidState = true;
-                        this->Disconnect(true, true, true);
+                        invalidState = true;
+                        Disconnect(true, true, true);
                     }
                 });
         }
     }
 
     // ASYNC - Prime context to write a message body
-    void WriteBody(boost::shared_ptr<Message<MsgId>> message)
+    void WriteBody(boost::shared_ptr<Message> message)
     {
-        auto self = this->shared_from_this();
+        auto self = shared_from_this();
         // If this function is called, a header has just been sent, and that
         // header indicated a body existed for this message. Fill a transmission
         // buffer with the body data, and send it!
@@ -343,7 +316,7 @@ class Connection
                                   [[maybe_unused]] std::size_t length) mutable {
                 if (!ec) {
                     if (messagesent_handler) {
-                        this->messagesent_handler(message, self);
+                        messagesent_handler(message, self);
                     }
                     // Sending was successful, so we are done with the
                     // message and remove it from the queue
@@ -356,7 +329,7 @@ class Connection
 #ifdef VERBOSE_SERVER_DEBUG
                     {
                         std::stringstream ss;
-                        ss << "[ Client " << this->GetId() << " ] "
+                        ss << "[ Client " << GetId() << " ] "
                            << "Wrote " << length << " bytes. (body)";
                         std::string output = ss.str();
                         std::cout << output << std::endl;
@@ -370,7 +343,7 @@ class Connection
 #ifdef VERBOSE_SERVER_DEBUG
                     {
                         std::stringstream ss;
-                        ss << "[ Client " << this->GetId() << " ] "
+                        ss << "[ Client " << GetId() << " ] "
                             << "Write Body Fail."
                             << " " << ec.value() << " - " << ec.message();
                         std::string output = ss.str();
@@ -379,8 +352,8 @@ class Connection
                         ss.str("");
                     }
 #endif
-                    this->invalidState = true;
-                    this->Disconnect(true, true, true);
+                    invalidState = true;
+                    Disconnect(true, true, true);
                 }
             });
     }
@@ -388,9 +361,9 @@ class Connection
     void AddToIncomingMessageQueue()
     {
         if (message_handler) {
-            this->message_handler(
-                boost::make_shared<Message<MsgId>>(std::move(tempInMsg)),
-                this->shared_from_this());
+            message_handler(
+                boost::make_shared<Message>(std::move(tempInMsg)),
+                shared_from_this());
         }
 
         tempInMsg.body.clear();
@@ -401,13 +374,13 @@ class Connection
 
     int connectionId;
 
-    Message<MsgId> tempInMsg;
-    Message<MsgId> tempOutMsg;
+    Message tempInMsg;
+    Message tempOutMsg;
 
-    ThreadSafeQueue<Message<MsgId>> qMessagesOut;
+    ThreadSafeQueue<Message> qMessagesOut;
 
     boost::signals2::connection c;
 
-    bool invalidState        = false;
-    bool alreadyDisconnected = false;
+    std::atomic_bool invalidState        = false;
+    std::atomic_bool alreadyDisconnected = false;
 };
