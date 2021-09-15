@@ -9,7 +9,7 @@ class Connection
 
   public:
     using ConnPtr = std::shared_ptr<Connection>;
-    using MsgPtr  = std::shared_ptr<Message>;
+    using MsgPtr  = std::shared_ptr<Message const>;
 
     using ClientMessageCallbackType     = std::function<void(MsgPtr const&, ConnPtr const&)>;
     using ClientMessageSentCallbackType = std::function<void(MsgPtr const&, ConnPtr const&)>;

@@ -23,7 +23,7 @@ template <typename MsgId> struct Message {
         Append(data_cStr);
     }
 
-    void GetString(size_t offset, std::string& dst)
+    void GetString(size_t offset, std::string& dst) const
     {
         if (body.size() >= offset + sizeof(size_t)) {
             size_t length;
@@ -37,7 +37,7 @@ template <typename MsgId> struct Message {
         dst.assign(error);
     }
 
-    std::string GetString(size_t offset)
+    std::string GetString(size_t offset) const
     {
         if (body.size() >= offset + sizeof(size_t)) {
             size_t length;
