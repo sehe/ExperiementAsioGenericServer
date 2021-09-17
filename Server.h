@@ -108,7 +108,6 @@ template <typename Message, typename Executor> class Server {
     void client_disconnected(ConnPtr const& connection)
     {
         OnClientDisconnect(connection);
-        removeConnection(connection);
     }
 
     void client_message(MsgPtr const& message, ConnPtr const& conn)
@@ -151,7 +150,6 @@ template <typename Message, typename Executor> class Server {
                 addConnection(std::move(new_connection));
             } else {
 #ifdef VERBOSE_SERVER_DEBUG
-
                 std::cout << "[ Client " << new_connection->GetId()
                           << " ]  Connection Denied." << std::endl;
 #endif
@@ -179,18 +177,6 @@ template <typename Message, typename Executor> class Server {
                               [](auto& kvp) { return kvp.second.expired(); });
             });
         }
-    }
-
-    void removeConnectionById(int id)
-    {
-        if (!shutdownBegan) {
-            post(strand_, [this, id]() mutable { connections.erase(id); });
-        }
-    }
-    
-    void removeConnection(ConnPtr const& connection)
-    {
-        removeConnectionById(connection->GetId());
     }
 
     Executor                   executor_;
