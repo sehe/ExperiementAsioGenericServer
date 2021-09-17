@@ -29,7 +29,8 @@ class Connection
     }
 
     socket_t& socket() { return socket_; }
-    int GetId() { return connectionId; }
+    int       GetId() { return connectionId; }
+    void      SetId(int id) { connectionId = id; }
 
     void accepted()
     {
@@ -84,14 +85,16 @@ class Connection
         }
         invalidState = true;
     }
+
     bool IsInvalid() const
     {
         return !socket_.is_open() || invalidState;
     }
+
     void Send(MsgPtr msg)
     {
         qMessagesOut.push_back(std::move(msg));
-        if (qMessagesOut.count() == 1) { // SEHE TODO FIXME Race condition
+        if (qMessagesOut.size() == 1) { // SEHE TODO FIXME Race condition?
             WriteMessage();
         }
     }
@@ -163,6 +166,7 @@ class Connection
                                 sizeof(tempInMsg.message_header)),
             [this, self = shared_from_this()](error_code ec, std::size_t) {
                 if (Report("Read Header", ec)) {
+                    std::cout << "ReadHeader header size: " << tempInMsg.message_header.size << std::endl;
                     tempInMsg.body.resize(tempInMsg.message_header.size);
                     ReadBody();
                 }
@@ -189,7 +193,8 @@ class Connection
         // have at least one message to send. So allocate a transmission buffer
         // to hold the message, and issue the work - asio, send these bytes
         if (!qMessagesOut.empty()) {
-            auto message = qMessagesOut.pop_front();
+            auto message = std::move(qMessagesOut.front());
+            qMessagesOut.pop_front();
 
             std::vector bufs = {
                 boost::asio::buffer(&message->message_header,
@@ -230,7 +235,7 @@ class Connection
     Message tempInMsg;
     Message tempOutMsg;
 
-    ThreadSafeQueue<MsgPtr> qMessagesOut;
+    std::deque<MsgPtr> qMessagesOut;
 
     std::atomic_bool invalidState        = false;
     std::atomic_bool alreadyDisconnected = false;

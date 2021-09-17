@@ -186,10 +186,4 @@ template <typename Message, typename Executor> class Server {
     std::atomic_bool           shutdownBegan{false};
     std::atomic_bool           shutdownCompleted{false};
     int                        connectionIds{10'000};
-
-    struct OwnedMessage {
-        ConnPtr remote = nullptr;
-        Message msg;
-    };
-    ThreadSafeQueue<OwnedMessage> qMessagesIn; // why is this here?
 };

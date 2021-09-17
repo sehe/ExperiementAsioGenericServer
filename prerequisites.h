@@ -1,6 +1,7 @@
 #pragma once
 //#define VERBOSE_SERVER_DEBUG
 #include <chrono>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -32,12 +33,31 @@ template <typename T> struct Message;
 
 #include "MessageHeader.h"
 #include "Message.h"
-#include "ThreadSafeQueue.h"
 
 using boost::asio::ip::tcp;
 using boost::system::error_code;
 using namespace std::chrono_literals;
-using Clock = std::chrono::high_resolution_clock;
+using Clock    = std::chrono::high_resolution_clock;
+using Executor = boost::asio::thread_pool::executor_type;
+
+enum class MessageTypes : uint32_t {
+    ServerAccept,
+    ServerDeny,
+    ServerPing,
+    MessageAll,
+    SendText,
+    ServerMessage,
+    ServerMessage1,
+    ServerMessage2,
+    ServerMessage3,
+    ServerMessage4,
+    ServerMessage5,
+    ServerMessage6,
+    ServerMessage7,
+    ServerMessage8,
+    ServerMessage9,
+};
 
 #include "Connection.h"
 #include "Server.h"
+#include "Client.h"

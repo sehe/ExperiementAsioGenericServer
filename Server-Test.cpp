@@ -3,26 +3,6 @@
 #include "prerequisites.h"
 #include <utility>
 
-enum class MessageTypes : uint32_t {
-    ServerAccept,
-    ServerDeny,
-    ServerPing,
-    MessageAll,
-    SendText,
-    ServerMessage,
-    ServerMessage1,
-    ServerMessage2,
-    ServerMessage3,
-    ServerMessage4,
-    ServerMessage5,
-    ServerMessage6,
-    ServerMessage7,
-    ServerMessage8,
-    ServerMessage9,
-};
-
-using Executor = boost::asio::thread_pool::executor_type;
-
 class MyServer : public Server<Message<MessageTypes>, Executor> {
   public:
     using Message = ::Message<MessageTypes>;
@@ -45,8 +25,7 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
         {
             auto msg = std::make_shared<Message>();
             msg->message_header.id = MessageTypes::ServerAccept;
-            (*msg) << remote->GetId();
-
+            msg->put(remote->GetId());
             remote->Send(std::move(msg));
         }
         return true;
@@ -56,9 +35,9 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
     {
         std::cout << "[ Client " << remote->GetId() << " ] ";
         if (msg->message_header.id == MessageTypes::SendText) {
-            std::string message = msg->GetString(0);
-            std::cout << " Received Message" << std::endl;
-            message = "";
+            auto message = msg->TextFragments().front();
+            std::cout << "Received Message (lenth:" << message.length() << ")"
+                      << std::endl;
             remote->Send(msg); // fire it back to the client
         }
     }
@@ -103,15 +82,19 @@ void timedBcast(error_code e)
                 auto msg = std::make_shared<Message<MessageTypes>>();
 
                 msg->message_header.id = MessageTypes::MessageAll;
-                msg->Append(std::string(rand() % 102400 + 81920, 'a') + " " +
-                        std::to_string(messageCount++));
+                auto space = msg->Alloc(rand() % 102400 + 81920);
+                {
+                    std::fill(begin(space), end(space), 'a');
+                    auto countmsg = " " + std::to_string(messageCount++);
+                    std::copy(begin(countmsg), end(countmsg),
+                              end(space) - countmsg.length());
+                }
                 //msg.TransactionId = "Broadcast";
-                tPrepared = Clock::now();
                 srv->BroadcastMessage(std::move(msg));
             }
 
             auto const tDone = Clock::now();
-            auto const time  = tDone - tPrepared;
+            auto const time  = tDone - std::exchange(tPrepared, tDone);
             auto const time2 = tDone - tStart;
 
             if (time != previous_time && time > 2us) {

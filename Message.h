@@ -1,60 +1,55 @@
 #pragma once
 #include "prerequisites.h"
-template <typename MsgId> struct Message {
+#include <span>
 
+template <typename MsgId> struct Message {
     [[nodiscard]] size_t size() const { return body.size(); }
     MessageHeader<MsgId>       message_header{};
     std::vector<unsigned char> body;
-    //std::string                TransactionId;
 
-    void Append(const char* data)
-    {
-        size_t i           = body.size();
-        size_t data_length = strlen(data);
-        body.resize(body.size() + sizeof(size_t) + data_length);
-        std::memcpy(body.data() + i, &data_length, sizeof(size_t));
-        std::memcpy(body.data() + sizeof(size_t) + i, data, data_length);
+    using View = std::span<unsigned char const>;
+    using Text = std::string_view;
+
+    std::span<unsigned char> Alloc(size_t n) {
+        auto const offset = body.size();
+        body.resize(body.size() + n + sizeof(n));
+
+        std::span target = body;
+        target           = target.subspan(offset);
+        memcpy(target.data(), &n, sizeof(n));
+
         message_header.size = (uint32_t)size();
+
+        return target.subspan(sizeof(n));
     }
 
-    void Append(std::string const& data)
-    {
-        const char* data_cStr = data.c_str();
-        Append(data_cStr);
-    }
+    auto ByteFragments() const {
+        std::vector<View> fragments;
 
-    void GetString(size_t offset, std::string& dst) const
-    {
-        if (body.size() >= offset + sizeof(size_t)) {
-            size_t length;
-            std::memcpy(&length, body.data() + offset, sizeof(size_t));
-            if (body.size() >= offset + sizeof(size_t) + length) {
-                dst.assign(length, body[sizeof(size_t) + offset]);
-            }
+        View   remain = body;
+
+        for (size_t n = 0; remain.size() > sizeof(n);) {
+            memcpy(&n, remain.data(), sizeof(n));
+            remain = remain.subspan(sizeof(n));
+            if (remain.size() < n)
+                throw std::runtime_error("Invalid text body");
+
+            fragments.emplace_back(remain.subspan(0u, n));
+            remain = remain.subspan(n);
         }
-
-        std::string error = "ERROR";
-        dst.assign(error);
+        return fragments;
     }
 
-    std::string GetString(size_t offset) const
-    {
-        if (body.size() >= offset + sizeof(size_t)) {
-            size_t length;
-            std::memcpy(&length, body.data() + offset, sizeof(size_t));
-            if (body.size() >= offset + sizeof(size_t) + length) {
-                std::string s = std::string(
-                    body.begin() + offset + sizeof(size_t),
-                    body.begin() + offset + sizeof(size_t) + length); // WORKS
-
-                return s;
-            }
-        }
-        return "ERROR";
+    auto TextFragments() const {
+        // Can be optimized, but would duplicate code
+        auto raw = ByteFragments();
+        std::vector<std::string_view> fragments(raw.size());
+        for (size_t i = 0; i < raw.size(); ++i)
+            fragments[i] = convert(raw[i]);
+        return fragments;
     }
 
-    // Override for std::cout compatibility - produces friendly description of
-    // message
+    // Override for iostream - friendly description of message
     friend std::ostream& operator<<(std::ostream& os, const Message<MsgId>& msg)
     {
         os << "ID:" << int(msg.message_header.id)
@@ -62,60 +57,37 @@ template <typename MsgId> struct Message {
         return os;
     }
 
-    // Convenience Operator overloads - These allow us to add and remove stuff
-    // from the body vector as if it were a stack, so First in, Last Out. These
-    // are a template in itself, because we dont know what data type the user is
-    // pushing or popping, so lets allow them all. NOTE: It assumes the data
-    // type is fundamentally Plain Old Data (POD). TLDR: Serialise & Deserialise
-    // into/from a vector
-
-    // Pushes any POD-like data into the message buffer
-    template <typename DataType>
-    friend Message<MsgId>& operator<<(Message<MsgId>& msg, const DataType& data)
+    template <typename T> void put(T const& object)
     {
-        // Check that the type of the data being pushed is trivially copyable
-        static_assert(std::is_standard_layout<DataType>::value,
-                      "Data is too complex to be pushed into vector");
+        static_assert(                                //
+            std::is_trivial<T>::value                 //
+                && std::is_standard_layout<T>::value, //
+            "T is not trivial");
 
-        // Cache current size of vector, as this will be the point we insert the
-        // data
-        size_t i = msg.body.size();
+        body.resize(sizeof(T));
+        std::memcpy(body.data(), &object, sizeof(T));
 
-        // Resize the vector by the size of the data being pushed
-        msg.body.resize(msg.body.size() + sizeof(DataType));
-
-        // Physically copy the data into the newly allocated vector space
-        std::memcpy(msg.body.data() + i, &data, sizeof(DataType));
-
-        // Recalculate the message size
-        msg.message_header.size = (uint32_t)msg.size();
-
-        // Return the target message so it can be "chained"
-        return msg;
+        message_header.size = (uint32_t)size();
     }
 
-    // Pulls any POD-like data form the message buffer
-    template <typename DataType>
-    friend Message& operator>>(Message& msg, DataType& data)
+    template <typename T> T get() const
     {
-        // Check that the type of the data being pushed is trivially copyable
-        static_assert(std::is_standard_layout<DataType>::value,
-                      "Data is too complex to be pulled from vector");
+        static_assert(                                //
+            std::is_trivial<T>::value                 //
+                && std::is_standard_layout<T>::value, //
+            "T is not trivial");
 
-        // Cache the location towards the end of the vector where the pulled
-        // data starts
-        size_t i = msg.body.size() - sizeof(DataType);
+        if (sizeof(T) != body.size()) // TODO SEHE
+            throw std::runtime_error("Unexpected message body");
 
-        // Physically copy the data from the vector into the user variable
-        std::memcpy(&data, msg.body.data() + i, sizeof(DataType));
+        T object;
+        std::memcpy(&object, body.data(), sizeof(T));
 
-        // Shrink the vector to remove read bytes, and reset end position
-        msg.body.resize(i);
+        return object;
+    }
 
-        // Recalculate the message size
-        msg.message_header.size = msg.size();
-
-        // Return the target message so it can be "chained"
-        return msg;
+  private:
+    static constexpr Text convert(View from) {
+        return Text(reinterpret_cast<char const*>(from.data()), from.size());
     }
 };
