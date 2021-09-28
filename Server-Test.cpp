@@ -60,7 +60,7 @@ boost::asio::thread_pool context;
 //int                      total_thread_count = 0;
 //size_t                   max_thread_count   = 1;
 
-boost::asio::high_resolution_timer timer(context, 1s);
+Timer timer(context, 1s);
 
 void timedBcast(error_code e)
 {

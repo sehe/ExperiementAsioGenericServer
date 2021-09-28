@@ -93,6 +93,8 @@ class Connection
 
     void Send(MsgPtr msg)
     {
+        if (IsInvalid())
+            return;
         qMessagesOut.push_back(std::move(msg));
         if (qMessagesOut.size() == 1) { // SEHE TODO FIXME Race condition?
             WriteMessage();
@@ -166,7 +168,6 @@ class Connection
                                 sizeof(tempInMsg.message_header)),
             [this, self = shared_from_this()](error_code ec, std::size_t) {
                 if (Report("Read Header", ec)) {
-                    std::cout << "ReadHeader header size: " << tempInMsg.message_header.size << std::endl;
                     tempInMsg.body.resize(tempInMsg.message_header.size);
                     ReadBody();
                 }

@@ -18,7 +18,7 @@ template <typename MsgId> struct Message {
         target           = target.subspan(offset);
         memcpy(target.data(), &n, sizeof(n));
 
-        message_header.size = (uint32_t)size();
+        message_header.size = static_cast<uint32_t>(size());
 
         return target.subspan(sizeof(n));
     }
