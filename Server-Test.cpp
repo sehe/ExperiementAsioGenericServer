@@ -3,9 +3,10 @@
 #include "prerequisites.h"
 #include <utility>
 
-class MyServer : public Server<Message<MessageTypes>, Executor> {
+class MyServer : public Server<MyServer, MyConnection> {
   public:
     using Message = ::Message<MessageTypes>;
+    using MsgPtr  = std::shared_ptr<Message const>;
 
     MyServer(Executor executor, tcp::endpoint ep)
         : MyServer::base_type(executor, std::move(ep))
@@ -31,7 +32,7 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
         return true;
     }
 
-    void OnMessage(MsgPtr const& msg, ConnPtr const& remote) override
+    void OnMessage(MsgPtr const& msg, ConnPtr const& remote)
     {
         std::cout << "[ Client " << remote->GetId() << " ] ";
         if (msg->message_header.id == MessageTypes::SendText) {
@@ -42,8 +43,7 @@ class MyServer : public Server<Message<MessageTypes>, Executor> {
         }
     }
 
-    void OnMessageSent(MsgPtr const&,
-                       [[maybe_unused]] ConnPtr const& remote) override
+    void OnMessageSent(MsgPtr const&, [[maybe_unused]] ConnPtr const& remote)
     {
         // std::cout << "[ Client " << remote->GetId() << " ] ";
         // std::cout << " Sent Message" << std::endl;

@@ -2,15 +2,12 @@
 #include "prerequisites.h"
 #include <future>
 
-template <typename Message, typename Executor> class Server {
+template <typename Derived, typename Connection> class Server {
   protected:
-    using base_type   = Server<Message, Executor>;
-    using Strand      = boost::asio::strand<Executor>;
+    using base_type   = Server<Derived, Connection>;
     using acceptor_t  = boost::asio::basic_socket_acceptor<tcp, Strand>;
-    using conn_t      = Connection<Message, Strand>;
-    using MsgPtr      = typename conn_t::MsgPtr;
-    using ConnPtr     = std::shared_ptr<conn_t>;
-    using WeakConnPtr = std::weak_ptr<conn_t>;
+    using ConnPtr     = std::shared_ptr<Connection>;
+    using WeakConnPtr = std::weak_ptr<Connection>;
 
   public:
     Server(Executor executor, tcp::endpoint endpoint)
@@ -68,11 +65,13 @@ template <typename Message, typename Executor> class Server {
             return 0;
         });
 
-        post(strand_,task);
-        return task.get_future();
+        auto fut = task.get_future();
+        post(strand_, std::move(task));
+        return fut;
     }
 
-    void BroadcastMessage(MsgPtr msg)
+    template <typename ConstMessage>
+    void BroadcastMessage(std::shared_ptr<ConstMessage> msg)
     {
         post(strand_, [this, msg = std::move(msg)] {
             for (const auto& kvp : connections) {
@@ -100,25 +99,18 @@ template <typename Message, typename Executor> class Server {
     // Called when a client appears to have disconnected
     virtual void OnClientDisconnect(ConnPtr const& /*remote*/) { }
 
-    // Called when a message arrives
-    virtual void OnMessage(MsgPtr const& /*message*/, ConnPtr const&) { }
-    virtual void OnMessageSent(MsgPtr const& /*message*/, ConnPtr const&) { }
+    /* // Static polymorphism:
+     *template <typename Message>
+     *void OnMessage(std::shared_ptr<Message const> const& message,
+     *               ConnPtr const&);
+     *template <typename Message>
+     *void OnMessageSent(std::shared_ptr<Message const> const& message,
+     *                   ConnPtr const&);
+     */
 
   private:
-    void client_disconnected(ConnPtr const& connection)
-    {
-        OnClientDisconnect(connection);
-    }
-
-    void client_message(MsgPtr const& message, ConnPtr const& conn)
-    {
-        OnMessage(message, conn);
-    }
-
-    void message_sent(MsgPtr const& message, ConnPtr const& conn)
-    {
-        OnMessageSent(message, conn);
-    }
+    Derived&       derived()       { return *static_cast<Derived*>(this);       } 
+    Derived const& derived() const { return *static_cast<Derived const*>(this); } 
 
     void start_accept()
     {
@@ -126,12 +118,12 @@ template <typename Message, typename Executor> class Server {
         using boost::placeholders::_2;
         if (!shutdownBegan && acceptor_.is_open()) {
 
-            auto new_connection = conn_t::create(
-                make_strand(executor_), 
+            auto new_connection = Connection::create(
+                make_strand(executor_), //
                 connectionIds++,
-                boost::bind(&Server::client_message, this, _1, _2),
-                boost::bind(&Server::message_sent, this, _1, _2),
-                boost::bind(&Server::client_disconnected, this, _1));
+                [this](auto const&... args) { derived().OnMessage(args...); },
+                [this](auto const&... args) { derived().OnMessageSent(args...); },
+                [this](auto const&... args) { this->OnClientDisconnect(args...); });
 
             acceptor_.async_accept(
                 new_connection->socket(),
