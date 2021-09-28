@@ -1,14 +1,15 @@
 #pragma once
 #include "prerequisites.h"
-template <typename Message, typename Executor>
+template <typename TMessage, typename Executor>
 class Connection
-    : public std::enable_shared_from_this<Connection<Message, Executor>> //
+    : public std::enable_shared_from_this<Connection<TMessage, Executor>> //
 {
     using std::enable_shared_from_this<Connection>::shared_from_this;
     using socket_t = boost::asio::basic_stream_socket<tcp, Executor>;
 
   public:
     using ConnPtr = std::shared_ptr<Connection>;
+    using Message = TMessage;
     using MsgPtr  = std::shared_ptr<Message const>;
 
     using ClientMessageCallbackType     = std::function<void(MsgPtr const&, ConnPtr const&)>;

@@ -1,15 +1,17 @@
 #pragma once
 #include "prerequisites.h"
 
-template <typename Message, typename Executor>
+template <typename Connection>
 class Client
 {
   protected:
-    using base_type   = Client<Message, Executor>;
-    using Strand      = boost::asio::strand<Executor>;
-    using conn_t      = Connection<Message, Strand>;
-    using MsgPtr      = typename conn_t::MsgPtr;
-    using ConnPtr     = std::shared_ptr<conn_t>;
+    using base_type = Client<Connection>;
+    using ConnPtr   = std::shared_ptr<Connection>;
+
+    // Alternative approach: violate encapsulation a little for convenience:
+    // constrast to the server that doesn't know anything about the message
+    // type
+    using MsgPtr  = typename Connection::MsgPtr;
 
   protected:
     virtual void OnConnect() {}
@@ -37,7 +39,7 @@ class Client
             // Create connection
             using boost::placeholders::_1;
             using boost::placeholders::_2;
-            _connection = conn_t::create( //
+            _connection = Connection::create( //
                 _strand, 0,               //
                 boost::bind(&Client::DoOnMessage, this, _1, _2),
                 boost::bind(&Client::DoOnMessageSent, this, _1, _2),
@@ -74,11 +76,11 @@ class Client
     // not safe outside strand
     bool IsConnected() { return _connection && _connection->socket().is_open(); }
 
-    void Send(Message msg)
+    void Send(MsgPtr msg)
     {
         post(_strand, [c = _connection, msg = std::move(msg)]() mutable { //
             if (c) {
-                c->Send(std::make_shared<Message>(std::move(msg)));
+                c->Send(std::move(msg));
             }
         });
     }
@@ -92,6 +94,6 @@ class Client
     void SetId(int id) { _connection->SetId(id); }
 
   protected:
-    Strand   _strand;
-    ConnPtr  _connection;
+    Strand  _strand;
+    ConnPtr _connection;
 };

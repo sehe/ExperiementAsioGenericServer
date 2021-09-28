@@ -3,9 +3,8 @@
 
 #include "prerequisites.h"
 
-class MyClient : public Client<Message<MessageTypes>, Executor> {
+class MyClient : public Client<MyConnection> {
   public:
-    using Message = ::Message<MessageTypes>;
     MyClient(Executor ex) : MyClient::base_type(ex), timer_(ex) {}
 
     virtual void OnDisconnect(ConnPtr const&)
@@ -82,10 +81,10 @@ class MyClient : public Client<Message<MessageTypes>, Executor> {
         {
             auto msg_size = Dist{409'600, 921'600}(prng_);
 
-            Message msg;
-            msg.message_header.id = MessageTypes::SendText;
+            auto msg = std::make_shared<MyMessage>();
+            msg->message_header.id = MessageTypes::SendText;
 
-            auto payload = msg.Alloc(msg_size);
+            auto payload = msg->Alloc(msg_size);
             std::fill(begin(payload), end(payload), 'a' + num_msgs_ % 27);
 
             Send(std::move(msg));

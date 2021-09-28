@@ -39,6 +39,7 @@ using boost::system::error_code;
 using namespace std::chrono_literals;
 using Clock    = std::chrono::high_resolution_clock;
 using Executor = boost::asio::thread_pool::executor_type;
+using Strand   = boost::asio::strand<Executor>;
 using Timer    = boost::asio::basic_waitable_timer<Clock>;
 
 enum class MessageTypes : uint32_t {
@@ -58,6 +59,9 @@ enum class MessageTypes : uint32_t {
     ServerMessage8,
     ServerMessage9,
 };
+
+using MyMessage    = Message<MessageTypes>;
+using MyConnection = Connection<MyMessage, Strand>;
 
 #include "Connection.h"
 #include "Server.h"
