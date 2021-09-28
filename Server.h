@@ -2,12 +2,14 @@
 #include "prerequisites.h"
 #include <future>
 
-template <typename Derived, typename Connection> class Server {
+template <typename Connection> class Server {
   protected:
-    using base_type   = Server<Derived, Connection>;
+    using base_type   = Server<Connection>;
     using acceptor_t  = boost::asio::basic_socket_acceptor<tcp, Strand>;
     using ConnPtr     = std::shared_ptr<Connection>;
     using WeakConnPtr = std::weak_ptr<Connection>;
+    using Message     = typename Connection::Message;
+    using MsgPtr      = typename Connection::MsgPtr;
 
   public:
     Server(Executor executor, tcp::endpoint endpoint)
@@ -70,8 +72,7 @@ template <typename Derived, typename Connection> class Server {
         return fut;
     }
 
-    template <typename ConstMessage>
-    void BroadcastMessage(std::shared_ptr<ConstMessage> msg)
+    void BroadcastMessage(MsgPtr msg)
     {
         post(strand_, [this, msg = std::move(msg)] {
             for (const auto& kvp : connections) {
@@ -98,20 +99,10 @@ template <typename Derived, typename Connection> class Server {
 
     // Called when a client appears to have disconnected
     virtual void OnClientDisconnect(ConnPtr const& /*remote*/) { }
-
-    /* // Static polymorphism:
-     *template <typename Message>
-     *void OnMessage(std::shared_ptr<Message const> const& message,
-     *               ConnPtr const&);
-     *template <typename Message>
-     *void OnMessageSent(std::shared_ptr<Message const> const& message,
-     *                   ConnPtr const&);
-     */
+    virtual void OnMessage(MsgPtr const&, ConnPtr const&) {}
+    virtual void OnMessageSent(MsgPtr const&, ConnPtr const&) {}
 
   private:
-    Derived&       derived()       { return *static_cast<Derived*>(this);       } 
-    Derived const& derived() const { return *static_cast<Derived const*>(this); } 
-
     void start_accept()
     {
         using boost::placeholders::_1;
@@ -121,9 +112,9 @@ template <typename Derived, typename Connection> class Server {
             auto new_connection = Connection::create(
                 make_strand(executor_), //
                 connectionIds++,
-                [this](auto const&... args) { derived().OnMessage(args...); },
-                [this](auto const&... args) { derived().OnMessageSent(args...); },
-                [this](auto const&... args) { this->OnClientDisconnect(args...); });
+                boost::bind(&Server::OnMessage, this, _1, _2),
+                boost::bind(&Server::OnMessageSent, this, _1, _2),
+                boost::bind(&Server::OnClientDisconnect, this, _1));
 
             acceptor_.async_accept(
                 new_connection->socket(),
