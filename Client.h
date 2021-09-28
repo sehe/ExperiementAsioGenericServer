@@ -2,11 +2,13 @@
 #include "prerequisites.h"
 
 template <typename Connection>
-class Client
+class Client : public std::enable_shared_from_this<Client<Connection> >
 {
   protected:
     using base_type = Client<Connection>;
-    using ConnPtr   = std::shared_ptr<Connection>;
+    using std::enable_shared_from_this<base_type>::shared_from_this;
+
+    using ConnPtr = std::shared_ptr<Connection>;
 
     // Alternative approach: violate encapsulation a little for convenience:
     // constrast to the server that doesn't know anything about the message
@@ -40,14 +42,15 @@ class Client
             using boost::placeholders::_1;
             using boost::placeholders::_2;
             _connection = Connection::create( //
-                _strand, 0,               //
-                boost::bind(&Client::DoOnMessage, this, _1, _2),
-                boost::bind(&Client::DoOnMessageSent, this, _1, _2),
-                boost::bind(&Client::DoOnDisconnected, this, _1));
+                _strand, 0,                   //
+                boost::bind(&Client::OnMessage, shared_from_this(), _1, _2),
+                boost::bind(&Client::OnMessageSent, shared_from_this(), _1, _2),
+                boost::bind(&Client::OnDisconnect, shared_from_this(), _1));
 
             async_connect( //
                 _connection->socket(), endpoints,
-                [this](std::error_code ec, tcp::endpoint) {
+                [this, self = shared_from_this()](std::error_code ec,
+                                                  tcp::endpoint) {
                     if (!ec) {
                         _connection->accepted();
                         OnConnect();
@@ -86,10 +89,6 @@ class Client
     }
 
     bool IsSending() { return _connection && _connection->IsSending(); }
-
-    void DoOnDisconnected(ConnPtr const& client) { OnDisconnect(client); }
-    void DoOnMessage(MsgPtr const& m, ConnPtr const& c) { OnMessage(m, c); }
-    void DoOnMessageSent(MsgPtr const& m, ConnPtr const& c) { OnMessageSent(m, c); }
 
     void SetId(int id) { _connection->SetId(id); }
 

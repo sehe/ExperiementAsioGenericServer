@@ -4,6 +4,8 @@
 #include "prerequisites.h"
 
 class MyClient : public Client<MyConnection> {
+    using base_type::shared_from_this;
+
   public:
     MyClient(Executor ex) : MyClient::base_type(ex), timer_(ex) {}
 
@@ -94,7 +96,7 @@ class MyClient : public Client<MyConnection> {
         std::cout << "Sleeping for " << delay / 1.0s << std::endl;
 
         timer_.expires_from_now(delay);
-        timer_.async_wait([this](error_code ec) {
+        timer_.async_wait([self = shared_from_this(), this](error_code ec) {
             if (isexiting_ || ec == boost::asio::error::operation_aborted) {
                 std::cout << "TimedSendLoop: " << ec.message() << std::endl;
                 return;
@@ -124,11 +126,11 @@ int main()
     uint16_t    port = 40'000;
 
     {
-        std::deque<std::unique_ptr<MyClient> > clients;
+        std::deque<std::shared_ptr<MyClient> > clients;
 
         std::generate_n( //
             back_inserter(clients), 200, [&] {
-                auto c = std::make_unique<MyClient>(io.get_executor());
+                auto c = std::make_shared<MyClient>(io.get_executor());
                 std::cout << "Connect" << std::endl;
                 c->Connect(host, port);
                 return c;
