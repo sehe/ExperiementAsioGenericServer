@@ -3,44 +3,45 @@
 
 #include "prerequisites.h"
 
-class MyClient : public Client<MyConnection> {
+class MyClient : public Client<SessionA> {
     using base_type::shared_from_this;
 
   public:
     MyClient(Executor ex) : MyClient::base_type(ex), timer_(ex) {}
 
-    virtual void OnDisconnect(ConnPtr const&)
+    virtual void OnDisconnect(SessPtr const&) override
     {
         std::cout << "Disconnected." << std::endl;
         timer_.cancel();
         isexiting_ = true;
     }
-    virtual void OnMessage(MsgPtr const& msg, ConnPtr const&)
+
+    virtual void OnMessage(MsgPtr const& msg, SessPtr const& conn) override
     {
+        using protocol::MessageTypes;
         switch (msg->message_header.id) {
         case MessageTypes::ServerAccept: {
             auto id = msg->get<int>();
-            SetId(id);
+            conn->SetId(id);
             std::cout << "[ SERVER ] SENT ID: " << id << std::endl;
-            StartSendMessages();
+            StartTimedSendLoop();
             break;
         }
         case MessageTypes::SendText: {
-            std::cout << "[ SERVER ] SENT MESSAGE " << msg->size()
-                      << " bytes long." << std::endl;
+            std::cout << "[ SERVER ] SENT MESSAGE " << msg->size() << " bytes long." << std::endl;
             break;
         }
         case MessageTypes::MessageAll: {
-            auto now      = Clock::now();
+            auto now = Clock::now();
             // atomic laptime
             auto time_taken = now - std::exchange(start_, now);
             auto s          = msg->TextFragments().front();
 
             if (!isfirst_.exchange(false)) {
-                if (time_taken > 55ms) {
+                if (time_taken > 55ns) {
                     std::cout << "MESSAGE WAS DELAYED (" << (time_taken / 1ms)
-                              << "ms, length: " << s.length() << ")"
-                              << std::endl;
+                              << "ms, length: " << s.length() << "/"
+                              << msg->raw_size() << ")" << std::endl;
                 }
             }
             break;
@@ -49,11 +50,11 @@ class MyClient : public Client<MyConnection> {
         }
     }
 
-    virtual void OnConnect()
+    virtual void OnConnect() override
     {
         std::cout << "[ DEBUG ] Thread Id: " << std::this_thread::get_id() << std::endl;
     }
-    virtual void OnMessageSent(MsgPtr const&)
+    virtual void OnMessageSent(MsgPtr const&, SessPtr const&) override
     {
         std::cout << "Message sent" << std::endl;
     }
@@ -65,7 +66,7 @@ class MyClient : public Client<MyConnection> {
     }
 
   private:
-    void StartSendMessages()
+    void StartTimedSendLoop()
     {
         if (num_msgs_ || !IsConnected())
             return; // already running
@@ -83,6 +84,7 @@ class MyClient : public Client<MyConnection> {
         {
             auto msg_size = Dist{409'600, 921'600}(prng_);
 
+            using namespace protocol;
             auto msg = std::make_shared<MyMessage>();
             msg->message_header.id = MessageTypes::SendText;
 
@@ -124,6 +126,7 @@ int main()
 
     std::string host = "localhost";
     uint16_t    port = 40'000;
+    auto endpoints   = tcp::resolver(io).resolve(host, std::to_string(port));
 
     {
         std::deque<std::shared_ptr<MyClient> > clients;
@@ -132,7 +135,7 @@ int main()
             back_inserter(clients), 200, [&] {
                 auto c = std::make_shared<MyClient>(io.get_executor());
                 std::cout << "Connect" << std::endl;
-                c->Connect(host, port);
+                c->Connect(endpoints);
                 return c;
             });
 

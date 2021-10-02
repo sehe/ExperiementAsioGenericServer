@@ -2,171 +2,114 @@
 #include "prerequisites.h"
 #include <future>
 
-template <typename Connection> class Server {
-  protected:
-    using base_type   = Server<Connection>;
-    using acceptor_t  = boost::asio::basic_socket_acceptor<tcp, Strand>;
-    using ConnPtr     = std::shared_ptr<Connection>;
-    using WeakConnPtr = std::weak_ptr<Connection>;
-    using Message     = typename Connection::Message;
-    using MsgPtr      = typename Connection::MsgPtr;
+namespace networking {
 
-  public:
-    Server(Executor executor, tcp::endpoint endpoint)
-        : executor_(executor)
-    {
-        acceptor_.open(endpoint.protocol());
-        acceptor_.set_option(tcp::acceptor::reuse_address(true));
-        acceptor_.set_option(tcp::acceptor::do_not_route(true));
-        acceptor_.set_option(tcp::acceptor::keep_alive(false));
-        acceptor_.set_option(tcp::acceptor::enable_connection_aborted(false));
-        acceptor_.set_option(tcp::acceptor::linger(false, 3));
+    struct listener {
+        using acceptor_t = boost::asio::basic_socket_acceptor<tcp, Strand>;
+        using socket_t   = boost::asio::basic_stream_socket<tcp, Strand>;
+        using action_t   = std::function<void(socket_t&&)>;
 
-        acceptor_.bind(endpoint);
-        acceptor_.listen();
+        acceptor_t acceptor_;
+        action_t   action_;
 
-        start_accept();
-    }
+        listener(Strand strand, tcp::endpoint ep, action_t action)
+            : acceptor_(strand)
+            , action_(std::move(action))
+        {
+            acceptor_.open(ep.protocol());
+            acceptor_.set_option(tcp::acceptor::reuse_address(true));
+            acceptor_.set_option(tcp::acceptor::do_not_route(true));
+            acceptor_.set_option(tcp::acceptor::keep_alive(false));
+            acceptor_.set_option(tcp::acceptor::enable_connection_aborted(false));
+            acceptor_.set_option(tcp::acceptor::linger(false, 3));
 
-    void interrupt()
-    {
-        shutdownBegan = true;
-
-        post(strand_, [this] {
-            acceptor_.cancel();
-            acceptor_.close();
-            for (const auto& [id, handle] : connections) {
-                if (auto conn = handle.lock())
-                    conn->Disconnect(true, true, true);
-            }
-            connections.clear();
-
-            shutdownCompleted = true;
-        });
-    }
-
-    std::future<size_t> CalculateAverageBacklog()
-    {
-        std::packaged_task<size_t()> task([this]() -> size_t {
-            size_t total = 0;
-            size_t count = 0;
-            for (const auto& [id, handle] : connections) {
-                if (auto conn = handle.lock()) {
-                    if (!conn->IsInvalid()) {
-                        size_t backlog = conn->GetSendBacklog();
-                        total += backlog;
-                        count++;
-                    }
-                }
-            }
-
-            if (count) {
-                auto average = 1.0 * total / count;
-                return average;
-            }
-            return 0;
-        });
-
-        auto fut = task.get_future();
-        post(strand_, std::move(task));
-        return fut;
-    }
-
-    void BroadcastMessage(MsgPtr msg)
-    {
-        post(strand_, [this, msg = std::move(msg)] {
-            for (const auto& kvp : connections) {
-                post(executor_, [this, handle = kvp.second, msg] {
-                    if (auto conn = handle.lock()) {
-                        if (!conn->IsInvalid()) {
-                            conn->Send(std::move(msg));
-                        }
-                    }
-                });
-            }
-        });
-    }
-
-    virtual ~Server() = default; // important for `delete` on derived classes!
-
-  protected:
-    // This server class should override thse functions to implement
-    // customised functionality
-
-    // Called when a client connects, you can veto the connection by returning
-    // false
-    virtual bool OnClientConnect(ConnPtr const& /*remote*/) { return false; }
-
-    // Called when a client appears to have disconnected
-    virtual void OnClientDisconnect(ConnPtr const& /*remote*/) { }
-    virtual void OnMessage(MsgPtr const&, ConnPtr const&) {}
-    virtual void OnMessageSent(MsgPtr const&, ConnPtr const&) {}
-
-  private:
-    void start_accept()
-    {
-        using boost::placeholders::_1;
-        using boost::placeholders::_2;
-        if (!shutdownBegan && acceptor_.is_open()) {
-
-            auto new_connection = Connection::create(
-                make_strand(executor_), //
-                connectionIds++,
-                boost::bind(&Server::OnMessage, this, _1, _2),
-                boost::bind(&Server::OnMessageSent, this, _1, _2),
-                boost::bind(&Server::OnClientDisconnect, this, _1));
-
-            acceptor_.async_accept(
-                new_connection->socket(),
-                boost::bind(&Server::handle_accept, this, new_connection,
-                            boost::asio::placeholders::error));
+            acceptor_.bind(ep);
+            acceptor_.listen();
         }
-    }
 
-    void handle_accept(ConnPtr new_connection, error_code error)
-    {
-        if (!error && !shutdownBegan) {
-            start_accept();
-            using boost::placeholders::_1;
-            if (OnClientConnect(new_connection)) {
-                new_connection->accepted();
-                addConnection(std::move(new_connection));
-            } else {
-#ifdef VERBOSE_SERVER_DEBUG
-                std::cout << "[ Client " << new_connection->GetId()
-                          << " ]  Connection Denied." << std::endl;
-#endif
-            }
-
-        } else if (!shutdownBegan) {
-            start_accept();
-#ifdef VERBOSE_SERVER_DEBUG
-
-            std::cout << "[ SERVER ] New connection error: " << error.message()
-                      << std::endl;
-#endif
-        }
-    }
-
-    void addConnection(ConnPtr connection)
-    {
-        if (!shutdownBegan) {
-            post(strand_, [this, conn = std::move(connection)]() mutable {
-
-                connections.emplace(conn->GetId(), std::move(conn));
-                // garbage collect connections
-                // c++20, otherwise clumsy iterator loop
-                std::erase_if(connections,
-                              [](auto& kvp) { return kvp.second.expired(); });
+        void start() { accept_loop(); }
+        void stop() {
+            post(acceptor_.get_executor(), [this] {
+                acceptor_.cancel();
+                acceptor_.close();
             });
         }
-    }
 
-    Executor                   executor_;
-    Strand                     strand_ = make_strand(executor_);
-    acceptor_t                 acceptor_{strand_};
-    std::map<int, WeakConnPtr> connections;
-    std::atomic_bool           shutdownBegan{false};
-    std::atomic_bool           shutdownCompleted{false};
-    int                        connectionIds{10'000};
-};
+      private:
+        void accept_loop() {
+            acceptor_.async_accept(                                         //
+                make_strand(acceptor_.get_executor().get_inner_executor()), //
+                [this](error_code ec, socket_t&& s) {
+                    if (!ec) {
+                        action_(std::move(s));
+                        accept_loop();
+                    } else {
+                        debug << "[ Listener ] " << ec.message() << std::endl;
+                    }
+                });
+        }
+    };
+
+    template <typename Factory>
+    struct session_manager {
+        using session_t = decltype(Factory{}(std::declval<listener::socket_t>(), 0));
+        using handle_t  = decltype(std::weak_ptr(session_t{}));
+
+        session_manager(Strand s, Factory factory)
+            : strand_(s)
+            , factory_(factory) { }
+
+        Strand                  strand_;
+        Factory                 factory_;
+        int                     sessionId_{10'000};
+        std::map<int, handle_t> sessions_;
+
+        void shutdown() {
+            for_each_session([](auto conn) { conn->Disconnect(true, true, true); });
+        }
+
+        void for_each_handle(auto operation) const {
+            post(strand_, [this, f = std::move(operation)] {
+                for (const auto& [id, handle] : sessions_)
+                    f(handle);
+            });
+        }
+
+        void for_each_session(auto operation) const {
+            post(strand_, [this, f = std::move(operation)] {
+                for (const auto& [id, handle] : sessions_)
+                    if (auto sess = handle.lock())
+                        f(sess);
+            });
+        }
+
+        size_t Count()
+        {
+            return post(strand_, std::packaged_task<size_t()>([this] {
+                            garbage_collect();
+                            return sessions_.size();
+                        }))
+                .get();
+        }
+
+        listener::action_t enter() {
+            return [this](listener::socket_t&& s) {
+                auto id = sessionId_++;
+                if (session_t sess = factory_(std::move(s), id)) {
+                    debug << "[ Session " << id << " ] Accepted." << std::endl;
+                    sessions_.emplace(id, std::move(sess));
+                    garbage_collect();
+                } else {
+                    debug << "[ Session " << id << " ] Denied." << std::endl;
+                }
+            };
+        }
+
+      private:
+        void garbage_collect()
+        {
+            std::erase_if(sessions_,
+                          [](auto& kvp) { return kvp.second.expired(); });
+        }
+    };
+} // namespace networking
