@@ -17,25 +17,27 @@
 using boost::asio::ip::tcp;
 using boost::system::error_code;
 
-template <typename T> class Session;
-
-#include "MessageHeader.h"
-#include "Message.h"
-
 using namespace std::chrono_literals;
 using Clock    = std::chrono::high_resolution_clock;
+static auto inline epoch_nanos()  {
+    return Clock::now().time_since_epoch() / 1ns;
+}
 using Executor = boost::asio::thread_pool::executor_type;
 using Strand   = boost::asio::strand<Executor>;
 using Timer    = boost::asio::basic_waitable_timer<Clock>;
+
+#include "MessageHeader.h"
+#include "Message.h"
 
 #ifdef VERBOSE_SERVER_DEBUG
     static inline std::ostream debug{std::cerr.rdbuf()};
 #else
     static inline std::ostream debug{nullptr};
 #endif
-using SessionA = Session<protocol::MyMessage>;
 
 #include "Session.h"
+using SessionA = Session<protocol::MyMessage>;
+
 /*
  *struct SessionA : Session<MyMessage> {
  *    using Session<MyMessage>::Session; // inherit constructors

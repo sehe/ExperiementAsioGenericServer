@@ -2,6 +2,10 @@
 //
 
 #include "prerequisites.h"
+#include "Statistics.h"
+
+static statistics::Accum g_latencies{"Latency", 4'000};
+static statistics::Accum g_roundtrips{"Roundtrip", 100};
 
 class MyClient : public Client<SessionA> {
     using base_type::shared_from_this;
@@ -23,12 +27,14 @@ class MyClient : public Client<SessionA> {
         case MessageTypes::ServerAccept: {
             auto id = msg->get<int>();
             conn->SetId(id);
-            std::cout << "[ SERVER ] SENT ID: " << id << std::endl;
+            //std::cout << "[ SERVER ] SENT ID: " << id << std::endl;
             StartTimedSendLoop();
             break;
         }
         case MessageTypes::SendText: {
-            std::cout << "[ SERVER ] SENT MESSAGE " << msg->size() << " bytes long." << std::endl;
+            //std::cout << "[ SERVER ] SENT MESSAGE " << msg->size() << " bytes long." << std::endl;
+            statistics::g_roundtrips.sample(epoch_nanos() -
+                                            msg->message_header.timestamp);
             break;
         }
         case MessageTypes::MessageAll: {
@@ -37,12 +43,13 @@ class MyClient : public Client<SessionA> {
             auto time_taken = now - std::exchange(start_, now);
             auto s          = msg->TextFragments().front();
 
-            if (!isfirst_.exchange(false)) {
-                if (time_taken > 55ns) {
-                    std::cout << "MESSAGE WAS DELAYED (" << (time_taken / 1ms)
-                              << "ms, length: " << s.length() << "/"
-                              << msg->raw_size() << ")" << std::endl;
-                }
+            statistics::g_latencies.sample(epoch_nanos() -
+                                           msg->message_header.timestamp);
+
+            if (time_taken > 110ms) {
+                std::cout << "MESSAGE WAS DELAYED (" << (time_taken / 1ms)
+                          << "ms, length: " << s.length() << "/"
+                          << msg->raw_size() << ")" << std::endl;
             }
             break;
         }
@@ -52,11 +59,11 @@ class MyClient : public Client<SessionA> {
 
     virtual void OnConnect() override
     {
-        std::cout << "[ DEBUG ] Thread Id: " << std::this_thread::get_id() << std::endl;
+        //std::cout << "[ DEBUG ] Thread Id: " << std::this_thread::get_id() << std::endl;
     }
     virtual void OnMessageSent(MsgPtr const&, SessPtr const&) override
     {
-        std::cout << "Message sent" << std::endl;
+        //std::cout << "Message sent" << std::endl;
     }
 
     ~MyClient()
@@ -80,7 +87,7 @@ class MyClient : public Client<SessionA> {
 
     void TimedSendLoop()
     {
-        std::cout << "TimedSendLoop #" << num_msgs_ + 1 << std::endl;
+        //std::cout << "TimedSendLoop #" << num_msgs_ + 1 << std::endl;
         {
             auto msg_size = Dist{409'600, 921'600}(prng_);
 
@@ -95,7 +102,7 @@ class MyClient : public Client<SessionA> {
         }
 
         auto delay = 1ms * Dist{1'000, 10'000}(prng_);
-        std::cout << "Sleeping for " << delay / 1.0s << std::endl;
+        //std::cout << "Sleeping for " << delay / 1.0s << std::endl;
 
         timer_.expires_from_now(delay);
         timer_.async_wait([self = shared_from_this(), this](error_code ec) {
@@ -110,7 +117,6 @@ class MyClient : public Client<SessionA> {
     }
 
     Clock::time_point start_;
-    std::atomic_bool isfirst_{true};
     std::atomic_bool isexiting_{false};
 
     // SendMessages state
@@ -128,13 +134,13 @@ int main()
     uint16_t    port = 40'000;
     auto endpoints   = tcp::resolver(io).resolve(host, std::to_string(port));
 
+    std::cout << std::fixed << std::setprecision(3);
     {
         std::deque<std::shared_ptr<MyClient> > clients;
 
         std::generate_n( //
             back_inserter(clients), 200, [&] {
                 auto c = std::make_shared<MyClient>(io.get_executor());
-                std::cout << "Connect" << std::endl;
                 c->Connect(endpoints);
                 return c;
             });

@@ -4,6 +4,9 @@
 #include <utility>
 #include <list>
 
+#include "Statistics.h"
+static statistics::Accum g_latencies{"Latency", 100};
+
 namespace networking {
     template<typename Factory>
     struct Server {
@@ -48,10 +51,15 @@ struct MyServer {
     using MsgPtr  = SessionA::MsgPtr;
 
     Factory factory_ = [this](Server::socket_t&& s, int id) {
+        using boost::placeholders::_1;
+        using boost::placeholders::_2;
         auto product = std::make_shared<SessionA>(
-            std::move(s), id, [](auto&&...) {}, [](auto&&...) {},
+            std::move(s), id,
+            boost::bind(&MyServer::OnMessage, this, _1, _2), //
+            [](auto&&...) {},                                //
             [](auto&&...) {});
         product->run();
+        OnClientConnect(product);
         return product;
     };
 
@@ -80,19 +88,20 @@ struct MyServer {
             });
     }
 
-#if 0
-    void OnClientDisconnect(ConnPtr const& remote) override
+#if 1
+    void OnClientDisconnect(SessPtr const& remote)
     {
         std::cout << "[ Client  " << remote->GetId() << " ] Disconnected"
             << std::endl;
     }
 
-    bool OnClientConnect(ConnPtr const& remote) override
+    bool OnClientConnect(SessPtr const& remote)
     {
         std::cout << "[ Client  " << remote->GetId() << " ] Connected" << std::endl;
 
         {
-            auto msg = std::make_shared<Message>();
+            using namespace protocol;
+            auto msg = std::make_shared<MyMessage>();
             msg->message_header.id = MessageTypes::ServerAccept;
             msg->put(remote->GetId());
             remote->Send(std::move(msg));
@@ -100,10 +109,12 @@ struct MyServer {
         return true;
     }
 
-    void OnMessage(MsgPtr const& msg, ConnPtr const& remote) override
+    void OnMessage(MsgPtr const& msg, SessPtr const& remote)
     {
         std::cout << "[ Client " << remote->GetId() << " ] ";
-        if (msg->message_header.id == MessageTypes::SendText) {
+        if (msg->message_header.id == protocol::MessageTypes::SendText) {
+            g_latencies.sample(epoch_nanos() - msg->message_header.timestamp);
+
             auto message = msg->TextFragments().front();
             std::cout << "Received Message (lenth:" << message.length() << ")"
                 << std::endl;
@@ -111,7 +122,7 @@ struct MyServer {
         }
     }
 
-    void OnMessageSent(MsgPtr const&, [[maybe_unused]] ConnPtr const& remote) override
+    void OnMessageSent(MsgPtr const&, [[maybe_unused]] SessPtr const& remote)
     {
         // std::cout << "[ Client " << remote->GetId() << " ] ";
         // std::cout << " Sent Message" << std::endl;
@@ -133,8 +144,7 @@ Timer timer(context, 1s);
 
 void timedBcast(error_code e)
 {
-    Clock::time_point const tStart = Clock::now();
-    Clock::time_point tPrepared    = tStart;
+    timer.expires_from_now(99ms);
 
     if (e || stop || !srv)
         return;
@@ -159,23 +169,9 @@ void timedBcast(error_code e)
         // std::cout << "Sessions: " << srv->Count() << std::endl;
     }
 
-    auto const tDone = Clock::now();
-    auto const time  = tDone - std::exchange(tPrepared, tDone);
-    auto const time2 = tDone - tStart;
-
-    if (time != previous_time && time > 2us) {
-        // timer += time - 6;
-        std::cout << "Broadcast took " << time / 1.0us << "μs | " << time2 / 1us << "μs" << std::endl;
-        previous_time = time;
-    }
-    auto time_expire = 99ms - time2;
-    if (time_expire <= 50ms) {
-        time_expire = 50ms;
-    }
     // Reschedule the timer
-    timer.expires_from_now(time_expire);
     timer.async_wait(timedBcast);
-    std::cout << "BROADCAST (sleep " << (time_expire/1.0ms) << "ms)" << std::endl;
+    std::cout << "BROADCAST (sleep " << (timer.expiry() - Clock::now()) / 1.0ms << "ms)" << std::endl;
 }
 
 int main()
