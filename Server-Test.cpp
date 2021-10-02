@@ -89,15 +89,14 @@ struct MyServer {
     }
 
 #if 1
-    void OnClientDisconnect(SessPtr const& remote)
+    void OnClientDisconnect([[maybe_unused]] SessPtr const& remote)
     {
-        std::cout << "[ Client  " << remote->GetId() << " ] Disconnected"
-            << std::endl;
+        //std::cout << "[ Client  " << remote->GetId() << " ] Disconnected" << std::endl;
     }
 
     bool OnClientConnect(SessPtr const& remote)
     {
-        std::cout << "[ Client  " << remote->GetId() << " ] Connected" << std::endl;
+        //std::cout << "[ Client  " << remote->GetId() << " ] Connected" << std::endl;
 
         {
             using namespace protocol;
@@ -111,13 +110,13 @@ struct MyServer {
 
     void OnMessage(MsgPtr const& msg, SessPtr const& remote)
     {
-        std::cout << "[ Client " << remote->GetId() << " ] ";
+        //std::cout << "[ Client " << remote->GetId() << " ] ";
         if (msg->message_header.id == protocol::MessageTypes::SendText) {
             g_latencies.sample(epoch_nanos() - msg->message_header.timestamp);
 
-            auto message = msg->TextFragments().front();
-            std::cout << "Received Message (lenth:" << message.length() << ")"
-                << std::endl;
+            [[maybe_unused]] auto message = msg->TextFragments().front();
+            // std::cout << "Received Message (lenth:" << message.length() <<
+            // ")" << std::endl;
             remote->Send(msg); // fire it back to the client
         }
     }
@@ -182,7 +181,8 @@ int main()
 
     srv = new MyServer(context.get_executor(), ep);
 
-    std::cout << "Hello World!\n";
+    std::cout << std::fixed << std::setprecision(3);
+    std::cout << "Hello!\n";
     timer.expires_from_now(1s);
     timer.async_wait(timedBcast);
 
