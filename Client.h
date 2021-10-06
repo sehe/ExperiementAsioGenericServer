@@ -9,13 +9,11 @@ class Client : public std::enable_shared_from_this<Client<Session> >
     using std::enable_shared_from_this<base_type>::shared_from_this;
 
     using SessPtr = std::shared_ptr<Session>;
+    using Message = typename Session::Message;
     using MsgPtr  = typename Session::MsgPtr;
 
   protected:
-    virtual void OnConnect() {}
-    virtual void OnDisconnect(SessPtr const&) {}
-    virtual void OnMessage(MsgPtr const&, SessPtr const&) {}
-    virtual void OnMessageSent(MsgPtr const&, SessPtr const&) {}
+    virtual void OnMessage(Message const&, SessPtr const&) {}
 
   public:
 	bool Connect(const std::string& host, const uint16_t port)
@@ -30,10 +28,8 @@ class Client : public std::enable_shared_from_this<Client<Session> >
         using boost::placeholders::_1;
         using boost::placeholders::_2;
         _connection = std::make_shared<Session>(
-            _strand, 0, //
-            boost::bind(&Client::OnMessage, shared_from_this(), _1, _2),
-            boost::bind(&Client::OnMessageSent, shared_from_this(), _1, _2),
-            boost::bind(&Client::OnDisconnect, shared_from_this(), _1));
+            _strand, 0,
+            boost::bind(&Client::OnMessage, shared_from_this(), _1, _2));
 
         async_connect( //
             _connection->socket(), endpoints,
@@ -41,7 +37,6 @@ class Client : public std::enable_shared_from_this<Client<Session> >
                                               tcp::endpoint) {
                 if (!ec) {
                     _connection->run();
-                    OnConnect();
                 }
             });
 

@@ -1,6 +1,7 @@
 #pragma once
 #include "prerequisites.h"
 #include <future>
+#include <list>
 
 namespace networking {
 
@@ -112,4 +113,40 @@ namespace networking {
                           [](auto& kvp) { return kvp.second.expired(); });
         }
     };
+
+    template<typename Factory>
+    struct basic_server {
+        using socket_t = listener::socket_t;
+
+        basic_server(Executor ex, Factory f, std::initializer_list<tcp::endpoint> eps)
+            : ex_(ex)
+            , sessmgr_(strand_, std::move(f))
+        {
+            for (auto ep : eps)
+                add_endpoint(ep);
+        }
+
+        void add_endpoint(tcp::endpoint ep) {
+            listeners_
+                .emplace_back(sessmgr_.strand_, ep, sessmgr_.enter()) //
+                .start();
+        }
+
+        void stop() {
+            for(auto& l : listeners_)
+                l.stop();
+            sessmgr_.shutdown();
+        }
+
+        void for_each_handle(auto f) { sessmgr_.for_each_handle(std::move(f)); }
+        void for_each_session(auto f) { sessmgr_.for_each_session(std::move(f)); }
+        size_t Count() { return sessmgr_.Count(); }
+
+      private:
+        Executor                 ex_;
+        Strand                   strand_{make_strand(ex_)};
+        session_manager<Factory> sessmgr_;
+        std::list<listener>      listeners_;
+    };
+
 } // namespace networking

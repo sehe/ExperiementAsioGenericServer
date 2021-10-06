@@ -12,15 +12,11 @@ class Session
     using Message = TMessage;
     using MsgPtr  = std::shared_ptr<Message const>;
 
-    using ClientMessageCallbackType     = std::function<void(MsgPtr const&, SessPtr const&)>;
-    using ClientMessageSentCallbackType = std::function<void(MsgPtr const&, SessPtr const&)>;
-    using ClientDisconnectCallbackType  = std::function<void(SessPtr const&)>;
-
     enum class owner { server, client };
 
     socket_t& socket() { return socket_; }
-    int       GetId() { return sessionId; }
-    void      SetId(int id) { sessionId = id; }
+    int       GetId() { return sessionId_; }
+    void      SetId(int id) { sessionId_ = id; }
 
     void run()
     {
@@ -59,27 +55,21 @@ class Session
         DoDisconnect(true, true, true);
     }
 
-    Session(Strand strand, int id,
-               ClientMessageCallbackType      message_handle,
-               ClientMessageSentCallbackType  messagesent_handle,
-               ClientDisconnectCallbackType   disconnect_handle
-            )
-        : disconnect_handler(disconnect_handle)
-        , message_handler(message_handle)
-        , messagesent_handler(messagesent_handle)
-        , socket_(strand)
-        , sessionId(id)
+    using Handler = std::function<void(Message const&, SessPtr const&)>;
+
+    Session(Strand strand, int id, Handler handler)
+        : socket_(strand)
+        , sessionId_(id)
+        , handler_(handler)
     { }
 
-    Session(socket_t&& s, int id, ClientMessageCallbackType message_handle,
-               ClientMessageSentCallbackType messagesent_handle,
-               ClientDisconnectCallbackType  disconnect_handle)
-        : disconnect_handler(disconnect_handle)
-        , message_handler(message_handle)
-        , messagesent_handler(messagesent_handle)
-        , socket_(std::move(s))
-        , sessionId(id)
-    { }
+    Session(socket_t&& s, int id, Handler handler)
+        : socket_(std::move(s))
+        , sessionId_(id)
+        , handler_(std::move(handler))
+    {
+    }
+
   private:
     void DoDisconnect(bool cancel, bool shutdown, bool close)
     {
@@ -102,9 +92,6 @@ class Session
 
             debug << "[ Client " << GetId() << " ] "
                   << "Disconnected.";
-            if (disconnect_handler) {
-                disconnect_handler(shared_from_this());
-            }
         }
     }
 
@@ -112,10 +99,6 @@ class Session
     {
         return !socket_.is_open() || invalidState;
     }
-
-    ClientDisconnectCallbackType  disconnect_handler;
-    ClientMessageCallbackType     message_handler;
-    ClientMessageSentCallbackType messagesent_handler;
 
     bool Report([[maybe_unused]] std::string_view caption, error_code ec,
                 [[maybe_unused]] auto&&... what)
@@ -169,10 +152,8 @@ class Session
 
     void CommitIncoming()
     {
-        if (message_handler) {
-            message_handler(
-                std::make_shared<Message>(std::move(incoming_)),
-                shared_from_this());
+        if (handler_) {
+            handler_(incoming_, shared_from_this());
         }
 
         incoming_.body.clear();
@@ -181,7 +162,8 @@ class Session
 
     socket_t socket_;
 
-    int sessionId;
+    int sessionId_;
+    Handler handler_;
 
     Message incoming_;
     std::deque<MsgPtr> outgoing_;

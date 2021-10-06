@@ -13,57 +13,41 @@ class MyClient : public Client<SessionA> {
   public:
     MyClient(Executor ex) : MyClient::base_type(ex), timer_(ex) {}
 
-    virtual void OnDisconnect(SessPtr const&) override
-    {
-        std::cout << "Disconnected." << std::endl;
-        timer_.cancel();
-        isexiting_ = true;
-    }
-
-    virtual void OnMessage(MsgPtr const& msg, SessPtr const& conn) override
+    virtual void OnMessage(Message const& msg, SessPtr const& conn) override
     {
         using protocol::MessageTypes;
-        switch (msg->message_header.id) {
+        switch (msg.message_header.id) {
         case MessageTypes::ServerAccept: {
-            auto id = msg->get<int>();
+            auto id = msg.get<int>();
             conn->SetId(id);
             //std::cout << "[ SERVER ] SENT ID: " << id << std::endl;
             StartTimedSendLoop();
             break;
         }
         case MessageTypes::SendText: {
-            //std::cout << "[ SERVER ] SENT MESSAGE " << msg->size() << " bytes long." << std::endl;
+            //std::cout << "[ SERVER ] SENT MESSAGE " << msg.size() << " bytes long." << std::endl;
             statistics::g_roundtrips.sample(epoch_nanos() -
-                                            msg->message_header.timestamp);
+                                            msg.message_header.timestamp);
             break;
         }
         case MessageTypes::MessageAll: {
             auto now = Clock::now();
             // atomic laptime
             auto time_taken = now - std::exchange(start_, now);
-            auto s          = msg->TextFragments().front();
+            auto s          = msg.TextFragments().front();
 
             statistics::g_latencies.sample(epoch_nanos() -
-                                           msg->message_header.timestamp);
+                                           msg.message_header.timestamp);
 
             if (time_taken > 110ms) {
                 std::cout << "MESSAGE WAS DELAYED (" << (time_taken / 1ms)
                           << "ms, length: " << s.length() << "/"
-                          << msg->raw_size() << ")" << std::endl;
+                          << msg.raw_size() << ")" << std::endl;
             }
             break;
         }
         default: throw std::runtime_error("Message type not implemented");
         }
-    }
-
-    virtual void OnConnect() override
-    {
-        //std::cout << "[ DEBUG ] Thread Id: " << std::this_thread::get_id() << std::endl;
-    }
-    virtual void OnMessageSent(MsgPtr const&, SessPtr const&) override
-    {
-        //std::cout << "Message sent" << std::endl;
     }
 
     ~MyClient()

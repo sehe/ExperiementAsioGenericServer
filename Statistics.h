@@ -22,6 +22,7 @@ namespace statistics {
             if (auto n = ba::count(_accum); n % _period == 0) {
                 std::cout << _name << " n=" << n
                           << " median=" << (1ns * ba::median(_accum) / 1.0ms)
+                          << " avg=" << (1ns * ba::mean(_accum) / 1.0ms)
                           << "ms stddev="
                           << (sqrt(ba::variance(_accum)) / 1'000'000) << "ms"
                           << std::endl;
